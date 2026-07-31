@@ -140,3 +140,36 @@ mobile/                 # Expo 原生 App 工程（共享云端数据）
 - 表格导入目前在电脑端体验最佳；手机端以查看已同步表格为主。
 - 云端同步为「最后写入获胜」的简单冲突策略，未做字段级合并；如需更严谨的并发控制可后续引入 CRDT / 版本向量。
 - 数据层当前为本地 + Supabase 双写，后续可接入实时订阅（Supabase Realtime）实现秒级互相同步。
+
+## 跨设备开发（在家 / 公司都能改、都能部署）
+
+源码已纳入 Git（本仓库）。要让**任意一台电脑**都能改功能并重新上线，按下面做：
+
+### 1. 把源码推到 GitHub（一次性）
+```bash
+# 在本仓库目录执行（先去 GitHub 建一个空仓库，拿到地址）
+git remote add origin https://github.com/zhaoziwei11/<仓库名>.git
+git branch -M main
+git push -u origin main
+```
+> 需要 GitHub Personal Access Token（PAT），不能用账号密码推。
+> 生成地址：GitHub → Settings → Developer settings → Personal access tokens → fine-grained，勾 repo 权限。
+
+### 2. 在家 / 公司改功能
+```bash
+git clone https://github.com/zhaoziwei11/<仓库名>.git
+cd workbench
+npm install
+# 编辑 src/ 下的功能（页面在 src/pages，逻辑在 src/lib）
+npm run dev        # 本地预览 http://localhost:5173
+npm run build      # 构建到 dist/（部署用）
+```
+
+### 3. 重新部署成公网网址
+两种办法任选：
+- **让 WorkBuddy 部署**：在任意设备的 WorkBuddy 里说「部署 workbench 最新版」，它会拉取仓库、构建并发布成新的公网链接。
+- **CloudStudio 自动部署**（可选）：把仓库连到 CloudStudio，配置构建命令 `npm install && npm run build`、产物目录 `dist`，之后每次 `git push` 自动上线。
+
+### 数据天然跨设备
+登录同一 Supabase 账号后，任务 / 表格 / 日报 / 会议纪要自动云端同步，改代码不影响数据。
+> 注意：`.env` 含 Supabase 密钥，**已 gitignore，切勿手动加入仓库**。克隆后把 `.env.example` 复制为 `.env` 填入自己的凭证即可。
