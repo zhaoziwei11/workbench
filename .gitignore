@@ -1,0 +1,33 @@
+# ===== 依赖 =====
+node_modules/
+.pnp/
+.pnp.js
+
+# ===== 构建产物（由 npm run build 生成，不入库） =====
+dist/
+dist-electron/
+release/
+out/
+
+# ===== 密钥 / 本地环境（绝不入库） =====
+.env
+.env.local
+.env.*.local
+
+# ===== Electron 运行时缓存 =====
+electron/dist/
+*.log
+
+# ===== 系统 / 编辑器 =====
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# ===== Python（mobile/electron 内若有脚本） =====
+__pycache__/
+*.pyc
+
+# ===== 示例数据（可选，按需保留） =====
+# sample/
