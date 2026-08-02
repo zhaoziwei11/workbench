@@ -101,6 +101,27 @@ body {
   margin: 0;
   font-size: 20px;
 }
+.src-tabs {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px;
+}
+.tab {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.tab.active {
+  background: var(--primary);
+  color: #fff;
+}
 .head-actions {
   display: flex;
   gap: 8px;
@@ -888,6 +909,26 @@ body {
   border-radius: 4px;
   font-size: 12px;
   color: #5a6270;
+}
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  padding: 28px;
+  text-align: center;
+  color: var(--text);
+  cursor: pointer;
+  transition: all .15s;
+  background: var(--panel);
+  margin: 6px 0 4px;
+}
+.drop-zone:hover,
+.drop-zone.drag {
+  border-color: var(--primary);
+  background: rgba(99, 102, 241, 0.06);
+}
+.drop-zone .drop-icon {
+  font-size: 28px;
+  margin-bottom: 6px;
 }
 
 .progress-wrap {
