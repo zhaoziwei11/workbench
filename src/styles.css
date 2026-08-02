@@ -1029,6 +1029,46 @@ body {
   color: var(--text);
 }
 
+/* ========== 运单数对比结果 ========== */
+.count-lists {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+.count-list-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px 12px;
+}
+.count-list-body {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 320px;
+  overflow: auto;
+}
+.count-chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 14px;
+  font-size: 12px;
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+  border: 1px solid var(--border);
+}
+.count-chip.onlya {
+  background: var(--onlya);
+  border-color: var(--onlya-b);
+  color: #7a5b00;
+}
+.count-chip.onlyb {
+  background: var(--onlyb);
+  border-color: var(--onlyb-b);
+  color: #1d6e3f;
+}
+
 /* ========== 链接按钮 ========== */
 .btn-link {
   background: none;

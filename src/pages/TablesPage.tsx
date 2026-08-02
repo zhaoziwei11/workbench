@@ -1,24 +1,121 @@
-import React, { useEffect, useRef, useState } from 'react';
-import type { TableFile, SheetData, CompareOutput, CompareMode } from '../types';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import type { TableFile, SheetData, CompareOutput, CompareMode, RowDiff } from '../types';
 import { getTables, saveTables } from '../lib/store';
 import { compareTables, parseFile } from '../lib/tables';
 
 // ========== 前端直连承运云（零后端 / 零服务器 / 零费用） ==========
-// 承运云网关已确认开放跨域(Allow-Origin:* / Allow-Headers:*)，且对国内浏览器 IP 不封锁，
-// 因此前端可直接用 Token 请求头 fetch 接口，无需 GitHub Actions / 本机后端。
 const GATEWAY = 'https://gateway.91msl.com/clx-performance/pc';
 const WAYBILL_EP = '/carrier/orderChild/pageCarrierOrderChildList';
 const BILLING_EP = '/carrier/settlementDriver/pageCarrierSettlementDriver';
 
 const TOKEN_KEY = 'chengyun_token_v1';
+const COUNT_KEY = '__count__'; // 「🚚 运单数对比」选项的 keyColOrMode 哨兵值
 
-// 本地日期(按浏览器时区)
+// ========== 字段中文别名表（接口列名 → 中文） ==========
+// 表格 A（运单列表，50 列）
+// 表格 B（货主计费，45 列）
+// 未列出的字段保持英文名原样显示
+const FIELD_LABELS: Record<string, string> = {
+  // --- 表格 A：运单 ---
+  ownerUserNo: '货主编号',
+  ownerName: '货主名称',
+  childNo: '子单号（运单号）',
+  status: '状态',
+  statusMsg: '状态描述',
+  orderNo: '订单号',
+  orderGoodsNo: '货号',
+  goodsName: '货物名称',
+  driverName: '司机姓名',
+  driverMobile: '司机电话',
+  freightPrice: '运费',
+  loadNet: '装货净重',
+  unloadNet: '卸货净重',
+  loadRough: '装货毛重',
+  loadTare: '装货皮重',
+  unloadRough: '卸货毛重',
+  unloadTare: '卸货皮重',
+  payTime: '支付时间',
+  goToSendTime: '去装货时间',
+  arriveSendTime: '到装货时间',
+  firstLoadTime: '首次装货时间',
+  goToReceiveTime: '去卸货时间',
+  arriveReceiveTime: '到卸货时间',
+  ownerConfirmTruckTime: '货主确认发车时间',
+  systemAutoConfirmTime: '系统自动确认时间',
+  firstUnloadTime: '首次卸货时间',
+  waitSettlementTime: '待结算时间',
+  confirmTime: '确认时间',
+  finishTime: '完成时间',
+  poundAuditTime: '过磅审核时间',
+  sendAddress: '发货地址',
+  receiveAddress: '收货地址',
+  truckNo: '车牌号',
+  orderSource: '订单来源',
+  orderSourceMsg: '订单来源描述',
+  transportCode: '运输代码',
+  transportStatus: '运输状态',
+  entranceTime: '进厂时间',
+  departureTime: '出厂时间',
+  recommendSort: '推荐排序',
+  actualQueueTime: '实际排队时间',
+  takeOrderWay: '接单方式',
+  takeOrderWayMsg: '接单方式描述',
+  appointmentTime: '预约时间',
+  departEarlyTime: '提前发车时间',
+  driverStatus: '司机状态',
+  driverStatusMsg: '司机状态描述',
+  electronicCodeChildType: '电签子单类型',
+  electronicCodeChildTypeMsg: '电签子单类型描述',
+  createTime: '创建时间',
+
+  // --- 表格 B：货主计费 ---
+  id: '记录ID',
+  driverUserNo: '司机编号',
+  goodsId: '货物ID',
+  reportType: '报号类型',
+  reportTypeMsg: '报号类型描述',
+  invoiceType: '票据类型',
+  invoiceTypeMsg: '票据类型描述',
+  settlementNo: '结算单号',
+  weight: '重量',
+  lossWeight: '亏损重量',
+  lossPrice: '亏损单价',
+  lossFreight: '亏损运费',
+  prepayFreight: '预付运费',
+  prepayFreightFlag: '预付运费标记',
+  loanFlag: '借款标记',
+  loanFlagMsg: '借款标记描述',
+  invoicingCompanyId: '开票公司ID',
+  invoicingCompanyShorterName: '开票公司简称',
+  platformFreightQuotationTaxType: '平台报价税率类型',
+  platformFreightQuotationTaxTypeMsg: '平台报价税率类型描述',
+  assistanceCosts: '协助费用',
+  platformServiceFee: '平台服务费',
+  platformServiceFeeRate: '平台服务费率',
+  settlementFreight: '结算运费',
+  shouldSettlementFreight: '应结运费',
+  consumptionCardRate: '消费卡费率',
+  consumptionCardAmount: '消费卡金额',
+  settleTime: '结算时间',
+  settlementPlatform: '结算平台',
+  payErrorMsg: '支付错误信息',
+  consumptionCardSettlementStatus: '消费卡结算状态',
+  consumptionCardSettlementStatusMsg: '消费卡结算状态描述',
+  ownerCompanyName: '货主公司名称',
+};
+
+// 字段显示名：「中文 (英文)」
+function fieldLabel(key: string): string {
+  const zh = FIELD_LABELS[key];
+  return zh ? `${zh} (${key})` : key;
+}
+
+// ========== 工具函数 ==========
 function localDate(d: Date = new Date()): string {
   const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
   return z.toISOString().slice(0, 10);
 }
 
-// 默认日期范围 = 昨天一天(本地时区)
 function defaultRange() {
   const y = new Date();
   y.setDate(y.getDate() - 1);
@@ -30,7 +127,6 @@ function uid() {
   return 'tb_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
-// ========== 接口记录 => 二维表(加表头) ==========
 function recordsToSheet(name: string, records: any[]): SheetData | null {
   if (!records || records.length === 0) return null;
   const headers: string[] = Object.keys(records[0]);
@@ -38,7 +134,6 @@ function recordsToSheet(name: string, records: any[]): SheetData | null {
   return { name, rows: [headers, ...rows] };
 }
 
-// 按某列去重计数(用于运单数统计)
 function countDistinctByCol(sheet: SheetData, colName: string): number | null {
   const header = sheet.rows[0] || [];
   const idx = header.indexOf(colName);
@@ -51,7 +146,6 @@ function countDistinctByCol(sheet: SheetData, colName: string): number | null {
   return set.size;
 }
 
-// ========== 直连抓取(分页拉全量) ==========
 async function fetchAllRecords(endpoint: string, token: string, body: Record<string, any>): Promise<any[]> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -81,33 +175,34 @@ async function fetchAllRecords(endpoint: string, token: string, body: Record<str
   return all;
 }
 
+// ========== 运单数对比结果类型（与逐行对比区分） ==========
+interface CountCompareResult {
+  kind: 'count';
+  totalA: number;
+  totalB: number;
+  both: number;
+  onlyA: string[];
+  onlyB: string[];
+  countCol: string;
+  tableAName: string;
+  tableBName: string;
+}
+
 export function TablesPage() {
   const [tables, setTables] = useState<TableFile[]>([]);
   useEffect(() => {
     getTables().then(setTables);
   }, []);
 
-  // ========== Token 管理(存 localStorage) ==========
+  // ========== Token 管理 ==========
   const [token, setToken] = useState<string>(() => {
-    try {
-      return localStorage.getItem(TOKEN_KEY) || '';
-    } catch {
-      return '';
-    }
+    try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
   });
   const [tokenInput, setTokenInput] = useState<string>(() => {
-    try {
-      return localStorage.getItem(TOKEN_KEY) || '';
-    } catch {
-      return '';
-    }
+    try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
   });
   const [tokenSaved, setTokenSaved] = useState<boolean>(() => {
-    try {
-      return !!localStorage.getItem(TOKEN_KEY);
-    } catch {
-      return false;
-    }
+    try { return !!localStorage.getItem(TOKEN_KEY); } catch { return false; }
   });
 
   function saveToken() {
@@ -115,9 +210,7 @@ export function TablesPage() {
     try {
       if (v) localStorage.setItem(TOKEN_KEY, v);
       else localStorage.removeItem(TOKEN_KEY);
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
     setToken(v);
     setTokenSaved(!!v);
     setMsg(v ? '✅ Token 已保存（仅存于本机浏览器）' : '已清除 Token');
@@ -131,7 +224,6 @@ export function TablesPage() {
   const [progressMsg, setProgressMsg] = useState('');
   const autoFetchedRef = useRef(false);
 
-  // 拉取结果统计
   const [fetchSummary, setFetchSummary] = useState<{
     waybill: { rows: number; headers: string[] } | null;
     billing: { rows: number; headers: string[] } | null;
@@ -149,18 +241,22 @@ export function TablesPage() {
   const [sheetA, setSheetA] = useState(0);
   const [sheetB, setSheetB] = useState(0);
   const [mode, setMode] = useState<CompareMode>('key');
-  const [keyCol, setKeyCol] = useState(0);
+  // 关键列下拉的选中值：数字字符串（真实列索引）或 COUNT_KEY（运单数对比模式）
+  const [keyColOrMode, setKeyColOrMode] = useState<string>('0');
   const [onlyDiff, setOnlyDiff] = useState(false);
+  // 两种对比结果分别存（互斥）
   const [result, setResult] = useState<CompareOutput | null>(null);
+  const [countResult, setCountResult] = useState<CountCompareResult | null>(null);
+  const [showOnlyAList, setShowOnlyAList] = useState(false);
+  const [showOnlyBList, setShowOnlyBList] = useState(false);
   const [msg, setMsg] = useState('');
 
-  // ========== 工具: 取表格某 sheet 经"列筛选"投影后的数据 ==========
-  function projectSheet(t: TableFile | undefined, sheetIdx: number): SheetData | null {
+  // ========== 项目投影(按字段筛选投影) ==========
+  function projectSheet(t: TableFile | undefined, sheetIdx: number, allowed?: Set<string>): SheetData | null {
     if (!t) return null;
     const sheet = t.sheets[sheetIdx];
     if (!sheet) return null;
     const allCols = sheet.rows[0] || [];
-    const allowed = colFilter[t.id];
     const keepIdx = allCols
       .map((h, i) => ({ h, i }))
       .filter(({ h, i }) => !allowed || allowed.size === 0 || allowed.has(h) || i === 0)
@@ -170,7 +266,6 @@ export function TablesPage() {
     return { name: sheet.name + '(已筛选)', rows: proj };
   }
 
-  // ========== 导入文件(原逻辑保留) ==========
   async function onFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
@@ -190,13 +285,14 @@ export function TablesPage() {
     if (aId === id) setAId('');
     if (bId === id) setBId('');
     setResult(null);
+    setCountResult(null);
     setColFilter((prev) => {
       const { [id]: _, ...rest } = prev;
       return rest;
     });
   }
 
-  // ========== 前端直连抓取(替代原云端 CSV 读取) ==========
+  // ========== 前端直连抓取 ==========
   async function fetchDirect() {
     if (!token.trim()) {
       setMsg('⚠️ 请先在上方输入并保存承运云 Token。Token 在承运云页面 F12 → Network → 任意请求的 Request Headers 里 `Token:` 这一行。');
@@ -207,6 +303,8 @@ export function TablesPage() {
     setMsg('');
     setProgressMsg('正在从承运云拉取运单数据…');
     setFetchSummary(null);
+    setResult(null);
+    setCountResult(null);
     try {
       const wbBody = {
         orderNo: '', orderSource: ' ', childNo: '', orderGoodsNo: '', truckNo: '',
@@ -267,17 +365,15 @@ export function TablesPage() {
     }
   }
 
-  // ========== 挂载: 若已存 Token 则自动按默认范围拉取一次 ==========
+  // 挂载时若已存 Token 自动拉取一次
   useEffect(() => {
     if (autoFetchedRef.current) return;
     autoFetchedRef.current = true;
-    if (token.trim()) {
-      fetchDirect();
-    }
+    if (token.trim()) fetchDirect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 自动对比: 获取完 → 选运单表为A、计费表为B → 关键列=childNo → 自动跑对比
+  // 获取完成后自动选好两表 + 跑逐行对比
   const autoComparedRef = useRef(false);
   useEffect(() => {
     if (!fetchSummary) return;
@@ -290,16 +386,16 @@ export function TablesPage() {
       const ha = w.sheets[0]?.rows[0] || [];
       selectAllCols(w.id, ha);
       const ki = ha.indexOf('childNo');
-      if (ki >= 0) setKeyCol(ki);
+      if (ki >= 0) setKeyColOrMode(String(ki));
       return;
     }
-    if (!autoComparedRef.current && !result) {
+    if (!autoComparedRef.current && !result && !countResult) {
       autoComparedRef.current = true;
       const t = window.setTimeout(() => runCompare(), 300);
       return () => window.clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchSummary, tables, aId, bId, keyCol]);
+  }, [fetchSummary, tables, aId, bId, keyColOrMode]);
 
   // ========== 字段筛选 toggle ==========
   function toggleCol(tableId: string, col: string) {
@@ -310,11 +406,13 @@ export function TablesPage() {
       return { ...prev, [tableId]: cur };
     });
     setResult(null);
+    setCountResult(null);
   }
 
   function selectAllCols(tableId: string, cols: string[]) {
     setColFilter((prev) => ({ ...prev, [tableId]: new Set(cols) }));
     setResult(null);
+    setCountResult(null);
   }
 
   function clearColFilter(tableId: string) {
@@ -323,9 +421,10 @@ export function TablesPage() {
       return rest;
     });
     setResult(null);
+    setCountResult(null);
   }
 
-  // ========== 跑对比(应用字段筛选) ==========
+  // ========== 跑对比(逐行 OR 运单数) ==========
   function runCompare() {
     const ta = tables.find((t) => t.id === aId);
     const tb = tables.find((t) => t.id === bId);
@@ -333,23 +432,105 @@ export function TablesPage() {
       setMsg('请选择两个表格进行对比。');
       return;
     }
-    const projA = projectSheet(ta, sheetA);
-    const projB = projectSheet(tb, sheetB);
+    const projA = projectSheet(ta, sheetA, colFilter[aId]);
+    const projB = projectSheet(tb, sheetB, colFilter[bId]);
     if (!projA || !projB) {
       setMsg('表格为空或列筛选后无数据。');
       return;
     }
+
+    // 模式：运单数对比（按 childNo 去重计数）
+    if (keyColOrMode === COUNT_KEY) {
+      const idxA = projA.rows[0].indexOf('childNo');
+      const idxB = projB.rows[0].indexOf('childNo');
+      if (idxA < 0 || idxB < 0) {
+        setMsg('❌ 运单数对比需要两表都包含「childNo (子单号)」列，请检查字段筛选或表格来源。');
+        setResult(null);
+        setCountResult(null);
+        return;
+      }
+      const setA = new Set<string>();
+      const setB = new Set<string>();
+      for (let i = 1; i < projA.rows.length; i++) {
+        const v = (projA.rows[i][idxA] || '').trim();
+        if (v) setA.add(v);
+      }
+      for (let i = 1; i < projB.rows.length; i++) {
+        const v = (projB.rows[i][idxB] || '').trim();
+        if (v) setB.add(v);
+      }
+      const onlyA: string[] = [];
+      const onlyB: string[] = [];
+      let both = 0;
+      setA.forEach((k) => { if (setB.has(k)) both++; else onlyA.push(k); });
+      setB.forEach((k) => { if (!setA.has(k)) onlyB.push(k); });
+      onlyA.sort();
+      onlyB.sort();
+      setResult(null);
+      setCountResult({
+        kind: 'count',
+        totalA: setA.size,
+        totalB: setB.size,
+        both,
+        onlyA,
+        onlyB,
+        countCol: 'childNo',
+        tableAName: ta.name,
+        tableBName: tb.name,
+      });
+      setShowOnlyAList(false);
+      setShowOnlyBList(false);
+      setMsg('');
+      return;
+    }
+
+    // 模式：逐行对比（按所选关键列匹配）
+    const keyCol = parseInt(keyColOrMode, 10);
+    if (isNaN(keyCol) || keyCol < 0) {
+      setMsg('请选择关键列。');
+      return;
+    }
     const out = compareTables(projA, projB, { mode, keyCol });
     setResult(out);
+    setCountResult(null);
     setMsg('');
   }
 
+  // ========== 派生数据（用 useMemo 缓存，避免每次 render 重算导致下拉卡顿） ==========
   const ta = tables.find((t) => t.id === aId);
   const tb = tables.find((t) => t.id === bId);
-  const headersA = ta?.sheets[sheetA]?.rows[0] ?? [];
-  const headersB = tb?.sheets[sheetB]?.rows[0] ?? [];
   const allowedA = colFilter[aId];
   const allowedB = colFilter[bId];
+  // 关键：每点一下下拉/勾字段都会触发 render；不 memo 会导致 projectSheet 每次都重建 1862 行的数组
+  const projA = useMemo(
+    () => projectSheet(ta, sheetA, allowedA),
+    [ta, sheetA, allowedA]
+  );
+  // 关键列下拉显示用的列头：如果"已筛选"后保留某列就用之，否则用全量列头
+  const headersForKeyDropdown = useMemo(() => {
+    return projA?.rows[0] ?? ta?.sheets[sheetA]?.rows[0] ?? [];
+  }, [projA, ta, sheetA]);
+
+  // ========== 字段筛选渲染（每行 checkbox label 用中文别名） ==========
+  function renderColChips(tableId: string, headers: string[], allowed?: Set<string>) {
+    return headers.map((h, i) => (
+      <label key={i} className="col-chip">
+        <input
+          type="checkbox"
+          checked={!allowed || allowed.size === 0 || allowed.has(h)}
+          onChange={() => toggleCol(tableId, h)}
+        />
+        <span title={h}>{fieldLabel(h) || `第${i + 1}列`}</span>
+      </label>
+    ));
+  }
+
+  // ========== 逐行对比结果：仅看差异 + 每行 cells 用 Map O(1) 查 ==========
+  const visibleRows: RowDiff[] = useMemo(() => {
+    if (!result) return [];
+    if (!onlyDiff) return result.rows;
+    return result.rows.filter((r) => r.cells.some((c) => c.status !== 'same'));
+  }, [result, onlyDiff]);
 
   return (
     <div className="page">
@@ -435,18 +616,6 @@ export function TablesPage() {
                 💰 货主计费: {fetchSummary.billing?.rows || 0} 行 / {fetchSummary.billing?.headers.length || 0} 列
               </span>
             </div>
-            <div className="wb-key-stats">
-              🚚 <strong>运单数对比（按子单号 childNo 去重）</strong>：
-              运单表 <b>{fetchSummary.waybillCount ?? '—'}</b> 条 ·
-              计费表 <b>{fetchSummary.billingCount ?? '—'}</b> 条
-              {fetchSummary.waybillCount != null && fetchSummary.billingCount != null && (
-                <span className={fetchSummary.waybillCount === fetchSummary.billingCount ? 'wb-match' : 'wb-diff'}>
-                  （差异 {Math.abs(fetchSummary.waybillCount - fetchSummary.billingCount)} 条）
-                </span>
-              )}
-              {fetchSummary.waybillCount == null && <span className="wb-warn">（运单表无 childNo 列）</span>}
-              {fetchSummary.billingCount == null && <span className="wb-warn">（计费表无 childNo 列）</span>}
-            </div>
           </div>
         )}
       </div>
@@ -478,7 +647,7 @@ export function TablesPage() {
           <div className="cmp-row">
             <label>
               表格 A
-              <select value={aId} onChange={(e) => { setAId(e.target.value); setResult(null); }}>
+              <select value={aId} onChange={(e) => { setAId(e.target.value); setResult(null); setCountResult(null); }}>
                 <option value="">选择…</option>
                 {tables.map((t) => (
                   <option key={t.id} value={t.id}>{t.name}</option>
@@ -489,7 +658,7 @@ export function TablesPage() {
               Sheet
               <select
                 value={sheetA}
-                onChange={(e) => { setSheetA(Number(e.target.value)); setResult(null); }}
+                onChange={(e) => { setSheetA(Number(e.target.value)); setResult(null); setCountResult(null); }}
                 disabled={!ta}
               >
                 {ta?.sheets.map((s, i) => (
@@ -504,24 +673,15 @@ export function TablesPage() {
             )}
           </div>
 
-          {aId && headersA.length > 0 && (
+          {aId && (ta?.sheets[sheetA]?.rows[0]?.length ?? 0) > 0 && (
             <div className="col-filter">
               <div className="col-filter-head">
                 <strong>表格 A 字段筛选</strong>
-                <span className="muted small">（{allowedA?.size || 0} / {headersA.length} 已选 · 不选 = 全选）</span>
-                <button className="btn-link" onClick={() => selectAllCols(aId, headersA)}>全选</button>
+                <span className="muted small">（{allowedA?.size || 0} / {ta?.sheets[sheetA]?.rows[0]?.length || 0} 已选 · 不选 = 全选）</span>
+                <button className="btn-link" onClick={() => selectAllCols(aId, ta?.sheets[sheetA]?.rows[0] || [])}>全选</button>
               </div>
               <div className="col-chip-list">
-                {headersA.map((h, i) => (
-                  <label key={i} className="col-chip">
-                    <input
-                      type="checkbox"
-                      checked={!allowedA || allowedA.size === 0 || allowedA.has(h)}
-                      onChange={() => toggleCol(aId, h)}
-                    />
-                    <span>{h || `第${i + 1}列`}</span>
-                  </label>
-                ))}
+                {renderColChips(aId, ta?.sheets[sheetA]?.rows[0] || [], allowedA)}
               </div>
             </div>
           )}
@@ -529,7 +689,7 @@ export function TablesPage() {
           <div className="cmp-row">
             <label>
               表格 B
-              <select value={bId} onChange={(e) => { setBId(e.target.value); setResult(null); }}>
+              <select value={bId} onChange={(e) => { setBId(e.target.value); setResult(null); setCountResult(null); }}>
                 <option value="">选择…</option>
                 {tables.map((t) => (
                   <option key={t.id} value={t.id}>{t.name}</option>
@@ -540,7 +700,7 @@ export function TablesPage() {
               Sheet
               <select
                 value={sheetB}
-                onChange={(e) => { setSheetB(Number(e.target.value)); setResult(null); }}
+                onChange={(e) => { setSheetB(Number(e.target.value)); setResult(null); setCountResult(null); }}
               >
                 {tb?.sheets.map((s, i) => (
                   <option key={i} value={i}>{s.name}</option>
@@ -554,24 +714,15 @@ export function TablesPage() {
             )}
           </div>
 
-          {bId && headersB.length > 0 && (
+          {bId && (tb?.sheets[sheetB]?.rows[0]?.length ?? 0) > 0 && (
             <div className="col-filter">
               <div className="col-filter-head">
                 <strong>表格 B 字段筛选</strong>
-                <span className="muted small">（{allowedB?.size || 0} / {headersB.length} 已选 · 不选 = 全选）</span>
-                <button className="btn-link" onClick={() => selectAllCols(bId, headersB)}>全选</button>
+                <span className="muted small">（{allowedB?.size || 0} / {tb?.sheets[sheetB]?.rows[0]?.length || 0} 已选 · 不选 = 全选）</span>
+                <button className="btn-link" onClick={() => selectAllCols(bId, tb?.sheets[sheetB]?.rows[0] || [])}>全选</button>
               </div>
               <div className="col-chip-list">
-                {headersB.map((h, i) => (
-                  <label key={i} className="col-chip">
-                    <input
-                      type="checkbox"
-                      checked={!allowedB || allowedB.size === 0 || allowedB.has(h)}
-                      onChange={() => toggleCol(bId, h)}
-                    />
-                    <span>{h || `第${i + 1}列`}</span>
-                  </label>
-                ))}
+                {renderColChips(bId, tb?.sheets[sheetB]?.rows[0] || [], allowedB)}
               </div>
             </div>
           )}
@@ -587,9 +738,10 @@ export function TablesPage() {
             {mode === 'key' && (
               <label>
                 关键列
-                <select value={keyCol} onChange={(e) => setKeyCol(Number(e.target.value))}>
-                  {(projectSheet(ta, sheetA)?.rows[0] || headersA).map((h: string, i: number) => (
-                    <option key={i} value={i}>{h || `第${i + 1}列`}</option>
+                <select value={keyColOrMode} onChange={(e) => setKeyColOrMode(e.target.value)}>
+                  <option value={COUNT_KEY}>🚚 运单数对比（按子单号 childNo 去重）</option>
+                  {headersForKeyDropdown.map((h: string, i: number) => (
+                    <option key={i} value={String(i)}>{fieldLabel(h) || `第${i + 1}列`}</option>
                   ))}
                 </select>
               </label>
@@ -599,7 +751,63 @@ export function TablesPage() {
         </div>
       )}
 
-      {/* ========== 对比结果 ========== */}
+      {/* ========== 对比结果：运单数对比模式 ========== */}
+      {countResult && (
+        <div className="result-panel">
+          <div className="result-summary">
+            <span className="sum-changed">共有 {countResult.both}</span>
+            <span className="sum-onlya">仅 A 有 {countResult.onlyA.length}</span>
+            <span className="sum-onlyb">仅 B 有 {countResult.onlyB.length}</span>
+          </div>
+          <div className="wb-key-stats result">
+            🚚 <strong>运单数对比（按 {countResult.countCol} 去重）</strong>：
+            A「{countResult.tableAName}」<b>{countResult.totalA}</b> 条 ·
+            B「{countResult.tableBName}」<b>{countResult.totalB}</b> 条
+            <span className={countResult.totalA === countResult.totalB ? 'wb-match' : 'wb-diff'}>
+              （差异 {Math.abs(countResult.totalA - countResult.totalB)} 条）
+            </span>
+          </div>
+
+          <div className="count-lists">
+            <div className="count-list-block">
+              <button
+                className="btn-link"
+                onClick={() => setShowOnlyAList((v) => !v)}
+              >
+                {showOnlyAList ? '▼' : '▶'} 仅 A 有（{countResult.onlyA.length} 条运单号）
+              </button>
+              {showOnlyAList && (
+                <div className="count-list-body">
+                  {countResult.onlyA.length === 0
+                    ? <span className="muted">（无）</span>
+                    : countResult.onlyA.map((k) => (
+                        <span key={k} className="count-chip onlya">{k}</span>
+                      ))}
+                </div>
+              )}
+            </div>
+            <div className="count-list-block">
+              <button
+                className="btn-link"
+                onClick={() => setShowOnlyBList((v) => !v)}
+              >
+                {showOnlyBList ? '▼' : '▶'} 仅 B 有（{countResult.onlyB.length} 条运单号）
+              </button>
+              {showOnlyBList && (
+                <div className="count-list-body">
+                  {countResult.onlyB.length === 0
+                    ? <span className="muted">（无）</span>
+                    : countResult.onlyB.map((k) => (
+                        <span key={k} className="count-chip onlyb">{k}</span>
+                      ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== 对比结果：逐行对比模式 ========== */}
       {result && (
         <div className="result-panel">
           <div className="result-summary">
@@ -612,37 +820,26 @@ export function TablesPage() {
             </label>
           </div>
 
-          {fetchSummary && (
-            <div className="wb-key-stats result">
-              🚚 <strong>运单数对比</strong>：
-              运单表 <b>{fetchSummary.waybillCount ?? '—'}</b> 条 ·
-              计费表 <b>{fetchSummary.billingCount ?? '—'}</b> 条
-              {fetchSummary.waybillCount != null && fetchSummary.billingCount != null && (
-                <span className={fetchSummary.waybillCount === fetchSummary.billingCount ? 'wb-match' : 'wb-diff'}>
-                  （差异 {Math.abs(fetchSummary.waybillCount - fetchSummary.billingCount)} 条）
-                </span>
-              )}
-            </div>
-          )}
-
           <div className="diff-table-wrap">
             <table className="diff-table">
               <thead>
                 <tr>
                   <th className="key-col">{result.mode === 'key' ? '关键列' : '行'}</th>
                   {result.headers.map((h) => (
-                    <th key={h}>{h || '—'}</th>
+                    <th key={h} title={h}>{fieldLabel(h) || h || '—'}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {result.rows
-                  .filter((r) => (onlyDiff ? r.cells.some((c) => c.status !== 'same') : true))
-                  .map((r) => (
+                {visibleRows.map((r) => {
+                  // 把 cells 转 Map，每格 O(1) 查（原来是 .find，O(cells)，3000 行 × 50 列 巨慢）
+                  const cellMap = new Map<string, typeof r.cells[number]>();
+                  for (const c of r.cells) cellMap.set(c.col, c);
+                  return (
                     <tr key={r.key}>
                       <td className="key-col">{r.key}</td>
                       {result.headers.map((h) => {
-                        const cell = r.cells.find((c) => c.col === h);
+                        const cell = cellMap.get(h);
                         if (!cell)
                           return (
                             <td key={h} className="c-empty">-</td>
@@ -667,7 +864,8 @@ export function TablesPage() {
                         );
                       })}
                     </tr>
-                  ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
