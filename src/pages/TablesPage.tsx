@@ -110,6 +110,47 @@ function fieldLabel(key: string): string {
   return zh ? `${zh} (${key})` : key;
 }
 
+// ========== 智能识别「标识类」列（编号 / 单号 / No / ID 等） ==========
+function isIdCol(h: string): boolean {
+  const L = (h || '').toLowerCase();
+  if (L === 'childno' || L === 'orderno' || L === 'id') return true;
+  if (/(no|num|id)$/.test(L)) return true;
+  if (/(编号|单号|编码|号码|单)$/.test(h || '')) return true;
+  return false;
+}
+function isDateCol(h: string): boolean {
+  const L = (h || '').toLowerCase();
+  if (/(time|date)$/.test(L)) return true;
+  if (/(时间|日期)$/.test(h || '')) return true;
+  return false;
+}
+
+// 在两张表共同列里挑最像「关键列」的那个（优先编号/单号类，避免误选时间列）
+function pickBestKeyCol(ha: string[], hb: string[]): number {
+  const common = ha.filter((h) => hb.includes(h));
+  if (common.length === 0) return -1;
+  const rank = (h: string) => {
+    if (isIdCol(h)) return 0;
+    if (isDateCol(h)) return 4; // 时间列优先度最低
+    return 2;
+  };
+  common.sort((a, b) => rank(a) - rank(b));
+  return ha.indexOf(common[0]);
+}
+
+// 自动检测「计数列」：childNo 优先，其次其他编号/单号类列，否则 -1
+function autoDetectCountCol(headers: string[]): number {
+  let i = headers.indexOf('childNo');
+  if (i < 0) i = headers.findIndex((h) => isIdCol(h) && h !== 'childNo');
+  return i;
+}
+
+// 数值保留最多 2 位小数
+function formatNum(n: number): string {
+  const r = Math.round(n * 100) / 100;
+  return String(r);
+}
+
 // ========== 工具函数 ==========
 function localDate(d: Date = new Date()): string {
   const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
@@ -255,6 +296,11 @@ export function TablesPage() {
   const [mode, setMode] = useState<CompareMode>('key');
   // 关键列下拉的选中值：数字字符串（真实列索引）或 COUNT_KEY（运单数对比模式）
   const [keyColOrMode, setKeyColOrMode] = useState<string>('0');
+  // 计数对比依据的列（-1 = 自动识别），支持任意模块的编号/单号类列
+  const [countColIdx, setCountColIdx] = useState<number>(-1);
+  // 逐行对比分页（避免大表一次性渲染卡死）
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 300;
   const [onlyDiff, setOnlyDiff] = useState(false);
   // 两种对比结果分别存（互斥）
   const [result, setResult] = useState<CompareOutput | null>(null);
@@ -336,6 +382,8 @@ export function TablesPage() {
     setAId('');
     setBId('');
     setKeyColOrMode('0');
+    setCountColIdx(-1);
+    setPage(0);
     setResult(null);
     setCountResult(null);
     setMsg('');
@@ -440,16 +488,24 @@ export function TablesPage() {
     setAId(a.id);
     setBId(b.id);
     const ha = a.sheets[0]?.rows[0] || [];
-    // 优先用 childNo；否则用两表第一个共同列作关键列
-    let ki = ha.indexOf('childNo');
-    if (ki < 0) {
-      const hb = b.sheets[0]?.rows[0] || [];
-      const common = ha.find((h) => hb.includes(h));
-      if (common) ki = ha.indexOf(common);
+    const hb = b.sheets[0]?.rows[0] || [];
+    // 智能选关键列：优先编号/单号类共同列（支持任意模块数据，不限于 childNo）
+    if (keyColOrMode !== COUNT_KEY) {
+      const ki = pickBestKeyCol(ha, hb);
+      if (ki >= 0) setKeyColOrMode(String(ki));
     }
-    if (ki >= 0) setKeyColOrMode(String(ki));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tables, srcMode]);
+
+  // 进入计数对比模式时，自动识别计数列（childNo / 编号 / 单号类）
+  useEffect(() => {
+    if (keyColOrMode !== COUNT_KEY) return;
+    if (countColIdx >= 0) return;
+    const t = tables.find((x) => x.id === aId);
+    const headers = t?.sheets[sheetA]?.rows[0] || [];
+    setCountColIdx(autoDetectCountCol(headers));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keyColOrMode, aId, sheetA, countColIdx]);
 
   // ========== 自动跑一次对比（A/B + 关键列都就绪后） ==========
   const runCompareRef = useRef<() => void>(() => {});
@@ -504,12 +560,18 @@ export function TablesPage() {
       return;
     }
 
-    // 模式：运单数对比（按 childNo 去重计数）
+    // 模式：计数对比（按所选计数列去重，支持任意模块，不限于 childNo）
     if (keyColOrMode === COUNT_KEY) {
-      const idxA = projA.rows[0].indexOf('childNo');
-      const idxB = projB.rows[0].indexOf('childNo');
+      const headersA = projA.rows[0] || [];
+      let ci = countColIdx;
+      if (ci < 0) ci = autoDetectCountCol(headersA);
+      if (ci < 0) ci = 0;
+      const countName = headersA[ci] || `第${ci + 1}列`;
+      const idxA = headersA.indexOf(countName);
+      const headersB = projB.rows[0] || [];
+      const idxB = headersB.indexOf(countName);
       if (idxA < 0 || idxB < 0) {
-        setMsg('❌ 运单数对比需要两表都包含「childNo (子单号)」列，请检查字段筛选或表格来源。');
+        setMsg(`❌ 计数对比需要两表都包含「${countName}」列，请检查字段筛选或表格来源，或换一个计数列。`);
         setResult(null);
         setCountResult(null);
         return;
@@ -539,12 +601,13 @@ export function TablesPage() {
         both,
         onlyA,
         onlyB,
-        countCol: 'childNo',
+        countCol: countName,
         tableAName: ta.name,
         tableBName: tb.name,
       });
       setShowOnlyAList(false);
       setShowOnlyBList(false);
+      setPage(0);
       setMsg('');
       return;
     }
@@ -561,6 +624,47 @@ export function TablesPage() {
     setMsg('');
   }
   runCompareRef.current = runCompare; // 始终指向最新闭包，供自动跑使用
+
+  // ========== 导出对比结果为 CSV（带 BOM，Excel 打开中文不乱码） ==========
+  function downloadCSV(filename: string, lines: string[][]) {
+    const esc = (s: unknown) => `"${String(s == null ? '' : s).replace(/"/g, '""')}"`;
+    const csv = lines.map((r) => r.map(esc).join(',')).join('\r\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function exportResult() {
+    if (countResult) {
+      const lines: string[][] = [['仅在A有', `仅在B有（计数列：${countResult.countCol}）`]];
+      const max = Math.max(countResult.onlyA.length, countResult.onlyB.length);
+      for (let i = 0; i < max; i++) {
+        lines.push([countResult.onlyA[i] || '', countResult.onlyB[i] || '']);
+      }
+      downloadCSV(`计数对比_${countResult.countCol}.csv`, lines);
+      return;
+    }
+    if (result) {
+      const head = ['关键列/行', ...result.headers.flatMap((h) => [`${fieldLabel(h)} (A)`, `${fieldLabel(h)} (B)`, '状态'])];
+      const lines: string[][] = [head];
+      for (const r of result.rows) {
+        const m = new Map(r.cells.map((c) => [c.col, c]));
+        const row: string[] = [r.key];
+        for (const h of result.headers) {
+          const c = m.get(h);
+          row.push(c ? c.a : '', c ? c.b : '', c ? c.status : '');
+        }
+        lines.push(row);
+      }
+      downloadCSV('逐行对比结果.csv', lines);
+    }
+  }
 
   // ========== 派生数据（用 useMemo 缓存，避免每次 render 重算导致下拉卡顿） ==========
   const ta = tables.find((t) => t.id === aId);
@@ -597,6 +701,16 @@ export function TablesPage() {
     if (!onlyDiff) return result.rows;
     return result.rows.filter((r) => r.cells.some((c) => c.status !== 'same'));
   }, [result, onlyDiff]);
+
+  // 切换结果/筛选时回到第一页
+  useEffect(() => { setPage(0); }, [result, onlyDiff]);
+
+  // 分页：大表只渲染当前页，避免一次性渲染上万行卡死
+  const pagedRows: RowDiff[] = useMemo(() => {
+    const startIdx = page * PAGE_SIZE;
+    return visibleRows.slice(startIdx, startIdx + PAGE_SIZE);
+  }, [visibleRows, page]);
+  const totalPages = Math.max(1, Math.ceil(visibleRows.length / PAGE_SIZE));
 
   return (
     <div className="page">
@@ -767,7 +881,7 @@ export function TablesPage() {
           <div className="cmp-row">
             <label>
               表格 A
-              <select value={aId} onChange={(e) => { setAId(e.target.value); setResult(null); setCountResult(null); autoRunRef.current = false; }}>
+              <select value={aId} onChange={(e) => { setAId(e.target.value); setResult(null); setCountResult(null); setCountColIdx(-1); autoRunRef.current = false; }}>
                 <option value="">选择…</option>
                 {tables.map((t) => (
                   <option key={t.id} value={t.id}>{t.name}</option>
@@ -778,7 +892,7 @@ export function TablesPage() {
               Sheet
               <select
                 value={sheetA}
-                onChange={(e) => { setSheetA(Number(e.target.value)); setResult(null); setCountResult(null); }}
+                onChange={(e) => { setSheetA(Number(e.target.value)); setResult(null); setCountResult(null); setCountColIdx(-1); setPage(0); }}
                 disabled={!ta}
               >
                 {ta?.sheets.map((s, i) => (
@@ -859,7 +973,22 @@ export function TablesPage() {
               <label>
                 关键列
                 <select value={keyColOrMode} onChange={(e) => setKeyColOrMode(e.target.value)}>
-                  <option value={COUNT_KEY}>🚚 运单数对比（按子单号 childNo 去重）</option>
+                  <option value={COUNT_KEY}>📊 计数对比（按所选计数列去重）</option>
+                  {headersForKeyDropdown.map((h: string, i: number) => (
+                    <option key={i} value={String(i)}>{fieldLabel(h) || `第${i + 1}列`}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {keyColOrMode === COUNT_KEY && (
+              <label>
+                计数列
+                <select value={String(countColIdx)} onChange={(e) => setCountColIdx(Number(e.target.value))}>
+                  {(() => {
+                    const autoIdx = autoDetectCountCol(headersForKeyDropdown);
+                    const autoName = autoIdx >= 0 ? fieldLabel(headersForKeyDropdown[autoIdx]) : '首列';
+                    return <option value="-1">自动（{autoName}）</option>;
+                  })()}
                   {headersForKeyDropdown.map((h: string, i: number) => (
                     <option key={i} value={String(i)}>{fieldLabel(h) || `第${i + 1}列`}</option>
                   ))}
@@ -878,9 +1007,10 @@ export function TablesPage() {
             <span className="sum-changed">共有 {countResult.both}</span>
             <span className="sum-onlya">仅 A 有 {countResult.onlyA.length}</span>
             <span className="sum-onlyb">仅 B 有 {countResult.onlyB.length}</span>
+            <button className="btn-sm export-btn" onClick={exportResult}>⬇ 导出 CSV</button>
           </div>
           <div className="wb-key-stats result">
-            🚚 <strong>运单数对比（按 {countResult.countCol} 去重）</strong>：
+            📊 <strong>计数对比（按 {countResult.countCol} 去重）</strong>：
             A「{countResult.tableAName}」<b>{countResult.totalA}</b> 条 ·
             B「{countResult.tableBName}」<b>{countResult.totalB}</b> 条
             <span className={countResult.totalA === countResult.totalB ? 'wb-match' : 'wb-diff'}>
@@ -938,6 +1068,7 @@ export function TablesPage() {
               <input type="checkbox" checked={onlyDiff} onChange={(e) => setOnlyDiff(e.target.checked)} />
               仅看差异
             </label>
+            <button className="btn-sm export-btn" onClick={exportResult}>⬇ 导出 CSV</button>
           </div>
 
           <div className="diff-table-wrap">
@@ -951,7 +1082,7 @@ export function TablesPage() {
                 </tr>
               </thead>
               <tbody>
-                {visibleRows.map((r) => {
+                {pagedRows.map((r) => {
                   // 把 cells 转 Map，每格 O(1) 查（原来是 .find，O(cells)，3000 行 × 50 列 巨慢）
                   const cellMap = new Map<string, typeof r.cells[number]>();
                   for (const c of r.cells) cellMap.set(c.col, c);
@@ -980,6 +1111,11 @@ export function TablesPage() {
                           >
                             <div className="va">{cell.a || <span className="na">∅</span>}</div>
                             <div className="vb">{cell.b || <span className="na">∅</span>}</div>
+                            {cell.numDelta != null && (
+                              <div className={'delta ' + (cell.numDelta > 0 ? 'up' : cell.numDelta < 0 ? 'down' : '')}>
+                                Δ {cell.numDelta > 0 ? '+' : ''}{formatNum(cell.numDelta)}
+                              </div>
+                            )}
                           </td>
                         );
                       })}
@@ -989,10 +1125,23 @@ export function TablesPage() {
               </tbody>
             </table>
           </div>
+
+          {totalPages > 1 && (
+            <div className="pager">
+              <button className="btn-sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>← 上一页</button>
+              <span className="muted">
+                第 {page + 1} / {totalPages} 页 · 显示 {page * PAGE_SIZE + 1}–
+                {Math.min((page + 1) * PAGE_SIZE, visibleRows.length)} 行 / 共 {visibleRows.length} 行
+              </span>
+              <button className="btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => p + 1)}>下一页 →</button>
+            </div>
+          )}
+
           <p className="legend">
             <span className="lg c-changed">红：不一致</span>
             <span className="lg c-onlya">黄：仅 A 有（B 缺失）</span>
             <span className="lg c-onlyb">绿：仅 B 有（新增）</span>
+            <span className="lg delta-note">Δ：数值类列 A→B 的增减</span>
           </p>
         </div>
       )}

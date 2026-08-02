@@ -41,6 +41,8 @@ export interface CellDiff {
   a: string;
   b: string;
   status: 'same' | 'changed' | 'onlyA' | 'onlyB';
+  /** 当 A/B 均为数值且不一致时，记录 B - A 的差值（用于显示 Δ） */
+  numDelta?: number;
 }
 
 export interface RowDiff {

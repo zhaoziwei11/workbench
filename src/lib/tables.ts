@@ -37,6 +37,18 @@ function norm(v: unknown): string {
   return String(v).trim();
 }
 
+// 是否为「数值」（支持千分位逗号与正负号），用于智能比对
+function isNumeric(s: string): boolean {
+  if (s == null || s === '') return false;
+  const t = s.replace(/,/g, '').trim();
+  if (t === '') return false;
+  if (!/^-?\d*\.?\d+$/.test(t)) return false;
+  return isFinite(Number(t));
+}
+function toNum(s: string): number {
+  return Number(s.replace(/,/g, '').trim());
+}
+
 interface CompareOpts {
   mode: CompareMode;
   keyCol: number; // key 模式下用作匹配列的索引
@@ -104,10 +116,16 @@ function compareByKey(a: SheetData, b: SheetData, keyCol: number): CompareOutput
       for (const col of headers) {
         const va = idxA(col) >= 0 ? norm(ra[idxA(col)]) : '';
         const vb = idxB(col) >= 0 ? norm(rb[idxB(col)]) : '';
-        if (va === vb) cells.push({ col, a: va, b: vb, status: 'same' });
-        else {
+        if (va === vb) {
+          cells.push({ col, a: va, b: vb, status: 'same' });
+        } else if (isNumeric(va) && isNumeric(vb) && toNum(va) === toNum(vb)) {
+          // 数值相等（如 100.00 与 100）视为一致
+          cells.push({ col, a: va, b: vb, status: 'same' });
+        } else {
           changed++;
-          cells.push({ col, a: va, b: vb, status: 'changed' });
+          const cell: CellDiff = { col, a: va, b: vb, status: 'changed' };
+          if (isNumeric(va) && isNumeric(vb)) cell.numDelta = toNum(vb) - toNum(va);
+          cells.push(cell);
         }
       }
     }
@@ -164,10 +182,15 @@ function compareByPosition(a: SheetData, b: SheetData): CompareOutput {
         const ib = hb.indexOf(col);
         const va = ia >= 0 ? norm(ra[ia]) : '';
         const vb = ib >= 0 ? norm(rb[ib]) : '';
-        if (va === vb) cells.push({ col, a: va, b: vb, status: 'same' });
-        else {
+        if (va === vb) {
+          cells.push({ col, a: va, b: vb, status: 'same' });
+        } else if (isNumeric(va) && isNumeric(vb) && toNum(va) === toNum(vb)) {
+          cells.push({ col, a: va, b: vb, status: 'same' });
+        } else {
           changed++;
-          cells.push({ col, a: va, b: vb, status: 'changed' });
+          const cell: CellDiff = { col, a: va, b: vb, status: 'changed' };
+          if (isNumeric(va) && isNumeric(vb)) cell.numDelta = toNum(vb) - toNum(va);
+          cells.push(cell);
         }
       }
     }
