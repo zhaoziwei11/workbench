@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, desktopCapturer } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -51,4 +51,19 @@ ipcMain.handle('save-file', async (_event, { defaultName, buffer }) => {
 ipcMain.handle('read-file', async (_event, filePath) => {
   if (!filePath || !fs.existsSync(filePath)) return null;
   return fs.readFileSync(filePath);
+});
+
+// 获取系统/会议声音源 id（供渲染进程 getUserMedia 采集系统音频）
+// 注意：需在 Electron 主进程调用 desktopCapturer；不同版本 API 略有差异，失败返回 null
+ipcMain.handle('get-system-audio-source', async () => {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+    });
+    // 优先取「整个屏幕」源，其次任意一个屏幕源
+    const screen = sources.find((s) => s.id.startsWith('screen')) || sources[0];
+    return screen ? screen.id : null;
+  } catch {
+    return null;
+  }
 });

@@ -652,6 +652,58 @@ body {
   padding: 6px;
   resize: vertical;
 }
+.cd-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ci-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ci-head .chapter-title {
+  margin-bottom: 0;
+  flex: 1;
+}
+.ci-ops {
+  display: flex;
+  gap: 4px;
+}
+.ci-btn {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #f5f7fa;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.ci-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ci-btn.ci-del {
+  color: var(--danger);
+}
+/* 录音：系统声音开关 + 实时波形 */
+.mix-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.waveform {
+  background: #f5f7fa;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
 .meeting-list {
   display: flex;
   flex-direction: column;

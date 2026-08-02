@@ -15,12 +15,32 @@ interface Draft {
   audioBlob?: Blob;
 }
 
+const MAX_RECORD_SECONDS = 3 * 60 * 60; // 最长 3 小时自动停止，避免无限录制
+
+// 尝试获取系统/会议声音流（仅桌面版 Electron 有效，失败则降级为仅麦克风）
+async function getSystemAudioStream(): Promise<MediaStream | null> {
+  try {
+    const api = (window as any).electronAPI;
+    const sourceId = api?.getSystemAudioSourceId ? await api.getSystemAudioSourceId() : null;
+    if (!sourceId) return null;
+    return await navigator.mediaDevices.getUserMedia({
+      audio: {
+        mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId },
+      } as any,
+    });
+  } catch {
+    return null;
+  }
+}
+
 export function MeetingPage() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   useEffect(() => {
     getMeetings().then(setMeetings);
   }, []);
   const [recording, setRecording] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [mixSystem, setMixSystem] = useState(false); // 同时录制系统/会议声音
   const [elapsed, setElapsed] = useState(0);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState('');
@@ -28,23 +48,76 @@ export function MeetingPage() {
   const [notice, setNotice] = useState('');
   const recorderRef = useRef<AudioRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
+  const elapsedRef = useRef(0);
+  const rafRef = useRef<number | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
   }, []);
 
+  // 实时音量波形绘制
+  function drawWave() {
+    const canvas = canvasRef.current;
+    const analyser = recorderRef.current?.getAnalyser();
+    if (!canvas || !analyser) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    const loop = () => {
+      rafRef.current = requestAnimationFrame(loop);
+      analyser.getByteFrequencyData(buf);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const bars = 32;
+      const step = Math.floor(buf.length / bars);
+      const bw = canvas.width / bars;
+      for (let i = 0; i < bars; i++) {
+        const v = buf[i * step] / 255;
+        const h = v * canvas.height;
+        ctx.fillStyle = '#2563eb';
+        ctx.fillRect(i * bw, canvas.height - h, Math.max(1, bw - 1), h);
+      }
+      if (!recorderRef.current?.isRecording && !recorderRef.current?.isPaused) {
+        if (rafRef.current) cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+    loop();
+  }
+
   async function startRec() {
     setError('');
+    setNotice('');
     try {
-      recorderRef.current = new AudioRecorder();
-      await recorderRef.current.start();
+      const recorder = new AudioRecorder();
+      let sysStream: MediaStream | null = null;
+      if (mixSystem) {
+        sysStream = await getSystemAudioStream();
+        if (!sysStream) setNotice('未能获取系统声音，将仅录制麦克风。');
+      }
+      await recorder.start(sysStream ? { systemStream: sysStream } : undefined);
+      recorderRef.current = recorder;
       setRecording(true);
+      setPaused(false);
+      elapsedRef.current = 0;
       setElapsed(0);
-      setDraft({ title: `会议 ${todayStr()}`, transcript: '', summary: '', chapters: [] });
-      timerRef.current = window.setInterval(() => setElapsed((s) => s + 1), 1000);
+      setDraft({
+        title: `会议 ${todayStr()}`,
+        transcript: '',
+        summary: '',
+        chapters: [],
+        actionItems: [],
+      });
+      timerRef.current = window.setInterval(() => {
+        elapsedRef.current += 1;
+        setElapsed(elapsedRef.current);
+        if (elapsedRef.current >= MAX_RECORD_SECONDS) stopRec();
+      }, 1000);
+      drawWave();
     } catch (e: any) {
       setError('无法访问麦克风：' + (e?.message || e));
     }
@@ -52,9 +125,14 @@ export function MeetingPage() {
 
   async function stopRec() {
     if (!recorderRef.current) return;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
     const blob = await recorderRef.current.stop();
     if (timerRef.current) window.clearInterval(timerRef.current);
     setRecording(false);
+    setPaused(false);
     // 保存音频到磁盘（Electron）或下载（浏览器）
     let audioPath: string | undefined;
     try {
@@ -198,6 +276,28 @@ export function MeetingPage() {
     );
   }
 
+  function addChapter() {
+    setDraft((d) =>
+      d ? { ...d, chapters: [...d.chapters, { id: uid(), title: '', content: '' }] } : d
+    );
+  }
+
+  function deleteChapter(id: string) {
+    setDraft((d) => (d ? { ...d, chapters: d.chapters.filter((c) => c.id !== id) } : d));
+  }
+
+  function moveChapter(id: string, dir: -1 | 1) {
+    setDraft((d) => {
+      if (!d) return d;
+      const idx = d.chapters.findIndex((c) => c.id === id);
+      const j = idx + dir;
+      if (idx < 0 || j < 0 || j >= d.chapters.length) return d;
+      const next = [...d.chapters];
+      [next[idx], next[j]] = [next[j], next[idx]];
+      return { ...d, chapters: next };
+    });
+  }
+
   // 载入历史会议；桌面版会尝试读取已保存的录音文件，使其可「重新转写」
   async function loadMeeting(m: Meeting) {
     const next: Draft = {
@@ -228,13 +328,47 @@ export function MeetingPage() {
       <div className="page-head">
         <h2>会议录音与纪要</h2>
         {!recording ? (
-          <button className="btn-primary" onClick={startRec}>
-            🎙️ 开始录音
-          </button>
+          <>
+            <button className="btn-primary" onClick={startRec}>
+              🎙️ 开始录音
+            </button>
+            <label className="mix-toggle" title="仅桌面版(Windows/Mac)有效：开启后同时录制系统/会议声音">
+              <input
+                type="checkbox"
+                checked={mixSystem}
+                onChange={(e) => setMixSystem(e.target.checked)}
+              />
+              同时录制系统声音
+            </label>
+          </>
         ) : (
-          <button className="btn-danger" onClick={stopRec}>
-            ■ 停止录音（{mm}:{ss}）
-          </button>
+          <>
+            <button className="btn-danger" onClick={stopRec}>
+              ■ 停止（{mm}:{ss}）
+            </button>
+            {!paused ? (
+              <button
+                className="btn-sm"
+                onClick={() => {
+                  recorderRef.current?.pause();
+                  setPaused(true);
+                }}
+              >
+                ⏸ 暂停
+              </button>
+            ) : (
+              <button
+                className="btn-sm"
+                onClick={() => {
+                  recorderRef.current?.resume();
+                  setPaused(false);
+                }}
+              >
+                ▶ 继续
+              </button>
+            )}
+            <canvas ref={canvasRef} width={260} height={36} className="waveform" title="实时音量" />
+          </>
         )}
         <button className="btn-sm" onClick={() => fileRef.current?.click()}>
           📁 上传音频转写
@@ -371,18 +505,52 @@ export function MeetingPage() {
                 />
               </label>
               <div className="chapter-dir">
-                <strong>章节目录</strong>
+                <div className="cd-head">
+                  <strong>章节目录</strong>
+                  <button className="btn-sm" onClick={addChapter}>
+                    ＋ 新增章节
+                  </button>
+                </div>
                 {draft.chapters.length === 0 && <p className="muted">暂无章节，生成纪要后自动划分。</p>}
                 {draft.chapters.map((c, i) => (
                   <div className="chapter-item" key={c.id}>
-                    <input
-                      className="chapter-title"
-                      value={c.title}
-                      onChange={(e) => updateChapter(c.id, { title: e.target.value })}
-                    />
+                    <div className="ci-head">
+                      <input
+                        className="chapter-title"
+                        value={c.title}
+                        placeholder={`议题 ${i + 1}`}
+                        onChange={(e) => updateChapter(c.id, { title: e.target.value })}
+                      />
+                      <div className="ci-ops">
+                        <button
+                          className="ci-btn"
+                          disabled={i === 0}
+                          title="上移"
+                          onClick={() => moveChapter(c.id, -1)}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          className="ci-btn"
+                          disabled={i === draft.chapters.length - 1}
+                          title="下移"
+                          onClick={() => moveChapter(c.id, 1)}
+                        >
+                          ↓
+                        </button>
+                        <button
+                          className="ci-btn ci-del"
+                          title="删除章节"
+                          onClick={() => deleteChapter(c.id)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
                     <textarea
                       rows={3}
                       value={c.content}
+                      placeholder="该章节要点"
                       onChange={(e) => updateChapter(c.id, { content: e.target.value })}
                     />
                     <span className="muted">议题 {i + 1}</span>
