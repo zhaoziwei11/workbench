@@ -711,15 +711,44 @@ body {
   margin-top: 10px;
 }
 .meeting-card {
+  position: relative;
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px 14px;
+  padding-right: 64px;
   box-shadow: var(--shadow);
   cursor: pointer;
 }
 .meeting-card:hover {
   border-color: var(--primary);
+}
+.mc-del {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: #b91c1c;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.mc-del:hover {
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+.audio-src {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.mc-del-inline {
+  color: #b91c1c;
+  border-color: #fca5a5;
 }
 .mc-title {
   font-weight: 600;

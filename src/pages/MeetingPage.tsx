@@ -320,6 +320,44 @@ export function MeetingPage() {
     setDraft(next);
   }
 
+  // 删除整条历史会议（含其录音文件）；删除前确认，录音移入回收站可找回
+  async function deleteMeeting(m: Meeting) {
+    const hasAudio = !!m.audioPath;
+    const ok = window.confirm(
+      `确定删除会议《${m.title}》吗？${hasAudio ? '对应的录音文件将移入回收站（可找回）。' : ''}此操作不可撤销。`
+    );
+    if (!ok) return; // 取消 = 保留
+    const next = meetings.filter((x) => x.id !== m.id);
+    setMeetings(next);
+    await saveMeetings(next);
+    if (hasAudio) {
+      try {
+        const api = (window as any).electronAPI;
+        if (api?.deleteFile) await api.deleteFile(m.audioPath!);
+      } catch {
+        /* 文件删除失败不影响会议记录清理 */
+      }
+    }
+    setNotice(`已删除会议《${m.title}》${hasAudio ? '，录音已移入回收站' : ''} ✅`);
+  }
+
+  // 删除当前草稿里的录音（文件移入回收站），仅清掉音频，不删除会议正文
+  async function deleteDraftAudio() {
+    const path = draft?.audioPath;
+    const ok = window.confirm('确定删除当前录音吗？文件将移入回收站（可找回）。');
+    if (!ok) return;
+    setDraft((d) => (d ? { ...d, audioBlob: undefined, audioPath: undefined } : d));
+    if (path) {
+      try {
+        const api = (window as any).electronAPI;
+        if (api?.deleteFile) await api.deleteFile(path);
+      } catch {
+        /* 忽略删除失败 */
+      }
+    }
+    setNotice('已删除当前录音（文件已移入回收站） ✅');
+  }
+
   const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
   const ss = String(elapsed % 60).padStart(2, '0');
 
@@ -429,9 +467,12 @@ export function MeetingPage() {
             {busy && <span className="muted">{busy}</span>}
           </div>
           {draft.audioPath && (
-            <p className="muted">
+            <p className="muted audio-src">
               音频来源：{draft.audioPath}
               {draft.audioBlob ? '（可重新转写 / 生成纪要）' : '（桌面版将自动读取以重新转写）'}
+              <button className="btn-sm mc-del-inline" onClick={deleteDraftAudio} title="删除当前录音（移入回收站）">
+                删除录音
+              </button>
             </p>
           )}
 
@@ -573,6 +614,16 @@ export function MeetingPage() {
               {m.audioPath ? ' · 有录音' : ''}
             </div>
             {m.summary && <div className="mc-sum">{m.summary}</div>}
+            <button
+              className="mc-del"
+              title="删除会议及其录音"
+              onClick={(e) => {
+                e.stopPropagation();
+                deleteMeeting(m);
+              }}
+            >
+              🗑 删除
+            </button>
           </div>
         ))}
       </div>

@@ -1,0 +1,90 @@
+[
+  {
+    "id": "seed-20260729-1",
+    "title": "修复 8788 自动获取承运云「导出文件」未实测成功",
+    "content": "点「导出」后约 60 秒等不到下载 → 超时。诊断结论：列表页能查到数据，但导出接口返回 data:null；浏览器内 fetch 又被 CORS 拦截。已把兜底从 page.evaluate(fetch()) 改为 page.context.request.post()（复用登录态），但尚未在公司/家用机验证成功。需重试「获取数据」，并读取 compare_data/_diag_waybill_compare.txt 定位真实列表查询接口后写死。",
+    "priority": "high",
+    "date": "2026-07-29",
+    "steps": [
+      { "id": "seed-20260729-1-s1", "text": "家用机首次运行前，先用 Edge 重新登录承运云（登录态未随备份打包）", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-1-s2", "text": "在 8788 工作台点「获取数据」触发抓取，观察是否仍超时", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-1-s3", "text": "若超时，打开 compare_data/_diag_waybill_compare.txt 查看真实请求/响应记录", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-1-s4", "text": "在 withdraw-report/fetch_compare_data.py 的 _try_direct_export 写死真实列表查询接口", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-1-s5", "text": "验证导出文件成功落盘（data 不再为 null）", "status": "pending", "updatedAt": 1785330268000 }
+    ],
+    "createdAt": 1785330268000,
+    "updatedAt": 1785330268000
+  },
+  {
+    "id": "seed-20260729-2",
+    "title": "家用机重新登录承运云（浏览器登录态未备份）",
+    "content": "browser-data/（Playwright 持久化的承运云/admin 登录态）因体积与隐私未打包进备份。回家后首次使用「自动获取/提现抓取」功能，需在本机用 Edge 重新登录一次承运云，脚本会自动复用。",
+    "priority": "medium",
+    "date": "2026-07-29",
+    "steps": [
+      { "id": "seed-20260729-2-s1", "text": "安装系统 Edge，并运行 playwright install msedge", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-2-s2", "text": "双击 withdraw-report/setup.bat，或在 withdraw-report 目录运行 python withdraw_report.py --setup", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-2-s3", "text": "在弹出的 Edge 中用账号密码 + 滑块验证码登录承运云", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-2-s4", "text": "回到命令行窗口按回车，确认提示「登录态已保存」", "status": "pending", "updatedAt": 1785330268000 }
+    ],
+    "createdAt": 1785330268000,
+    "updatedAt": 1785330268000
+  },
+  {
+    "id": "seed-20260729-3",
+    "title": "会议录音支持系统/会议声音采集（desktopCapturer + 混流）",
+    "content": "当前录音仅采集麦克风音；若需采集系统/会议声音，需改用 desktopCapturer 并做音频混流。建议在电脑端（Electron）实现，移动端以查看为主。",
+    "priority": "medium",
+    "date": "2026-07-29",
+    "steps": [
+      { "id": "seed-20260729-3-s1", "text": "在 electron/main.cjs 调研 desktopCapturer 获取系统音频轨", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-3-s2", "text": "设计麦克风 + 系统音混流方案（Web Audio / ffmpeg）", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-3-s3", "text": "在 workbench/src/lib/audio.ts 接入混流逻辑", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-3-s4", "text": "界面增加「采集来源」开关（麦克风 / 系统 / 混合）", "status": "pending", "updatedAt": 1785330268000 }
+    ],
+    "createdAt": 1785330268000,
+    "updatedAt": 1785330268000
+  },
+  {
+    "id": "seed-20260729-4",
+    "title": "云端同步引入字段级合并（CRDT / 版本向量）",
+    "content": "当前云端同步为「最后写入获胜」的简单冲突策略，未做字段级合并；如需更严谨的多端并发控制，可后续引入 CRDT / 版本向量。",
+    "priority": "low",
+    "date": "2026-07-29",
+    "steps": [
+      { "id": "seed-20260729-4-s1", "text": "评估 Yjs / Automerge 等 CRDT 库与 Supabase 的适配", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-4-s2", "text": "设计 tasks / tables / meetings 的字段级合并规则", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-4-s3", "text": "改造 store.ts 的 save / push 流程以应用合并", "status": "pending", "updatedAt": 1785330268000 }
+    ],
+    "createdAt": 1785330268000,
+    "updatedAt": 1785330268000
+  },
+  {
+    "id": "seed-20260729-5",
+    "title": "接入 Supabase Realtime 实现秒级互相同步",
+    "content": "数据层当前为本地 + Supabase 双写，尚未接入实时订阅；可接入 Supabase Realtime 实现手机与电脑秒级互相同步。",
+    "priority": "low",
+    "date": "2026-07-29",
+    "steps": [
+      { "id": "seed-20260729-5-s1", "text": "在 supabase/schema.sql 为相关表开启 Realtime 发布", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-5-s2", "text": "在 workbench/src/lib/cloud.ts 订阅 tasks / tables / meetings 变更", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-5-s3", "text": "前端监听增量更新并合并到本地", "status": "pending", "updatedAt": 1785330268000 }
+    ],
+    "createdAt": 1785330268000,
+    "updatedAt": 1785330268000
+  },
+  {
+    "id": "seed-20260729-6",
+    "title": "兜底解决 vite build 被「安全删除」拦截",
+    "content": "部分环境 vite build 清空 dist 时会被「安全删除（移到回收站）」拦截而报错。已通过 vite.config.ts 设 emptyOutDir:false 缓解，但极端情况仍需手动 rm -rf dist 再 build。可调研用 rimraf 清空或配置忽略回收站策略。",
+    "priority": "low",
+    "date": "2026-07-29",
+    "steps": [
+      { "id": "seed-20260729-6-s1", "text": "确认家用机环境是否复现该拦截", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-6-s2", "text": "如复现，改用 rimraf 清空 dist，或在构建前忽略回收站策略", "status": "pending", "updatedAt": 1785330268000 },
+      { "id": "seed-20260729-6-s3", "text": "必要时在 README 固化该操作说明", "status": "pending", "updatedAt": 1785330268000 }
+    ],
+    "createdAt": 1785330268000,
+    "updatedAt": 1785330268000
+  }
+]

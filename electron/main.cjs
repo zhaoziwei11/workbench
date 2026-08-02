@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, desktopCapturer } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, desktopCapturer, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -51,6 +51,24 @@ ipcMain.handle('save-file', async (_event, { defaultName, buffer }) => {
 ipcMain.handle('read-file', async (_event, filePath) => {
   if (!filePath || !fs.existsSync(filePath)) return null;
   return fs.readFileSync(filePath);
+});
+
+// 删除已保存的录音文件（历史会议「删除」时调用）
+// 优先移入系统回收站（shell.trashItem），删除后仍可找回；回收站不可用再回退到永久删除。
+ipcMain.handle('delete-file', async (_event, filePath) => {
+  if (!filePath || !fs.existsSync(filePath)) return { ok: false, reason: 'missing' };
+  try {
+    await shell.trashItem(filePath);
+    return { ok: true, trashed: true };
+  } catch (e) {
+    // 回收站失败（如某些沙箱/网络盘），退回永久删除
+    try {
+      fs.rmSync(filePath, { force: true });
+      return { ok: true, trashed: false };
+    } catch (e2) {
+      return { ok: false, reason: (e2 as any)?.message || 'delete-failed' };
+    }
+  }
 });
 
 // 获取系统/会议声音源 id（供渲染进程 getUserMedia 采集系统音频）
