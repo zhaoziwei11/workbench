@@ -99,6 +99,7 @@ async function fetchWithRetry(
 interface ChapterResult {
   summary: string;
   chapters: Chapter[];
+  actionItems: string[]; // 会议级行动项 / 待办清单（便于一键抽取到任务页）
 }
 
 // 基于转写文本生成结构化会议纪要（摘要 + 章节）
@@ -113,9 +114,10 @@ export async function generateMinutes(
   const prompt = `你是一名专业的会议纪要助手。请根据下面的会议转写文本，输出 JSON（不要多余解释），结构如下：
 {
   "summary": "一段 100 字以内的会议总体摘要",
-  "chapters": [ { "title": "章节/议题标题", "content": "该章节要点，2-4 条" } ]
+  "chapters": [ { "title": "章节/议题标题", "content": "该章节要点，2-4 条", "actionItems": ["该章节明确的待办/行动项（可选）"] } ],
+  "actionItems": [ "会议中明确需要跟进的待办事项，每条尽量具体可执行，例如：张三周五前提交方案" ]
 }
-要求：根据内容语义自动划分 3-6 个章节；content 用换行分隔要点。\n\n会议转写文本：\n${transcript}`;
+要求：根据内容语义自动划分 3-6 个章节；content 用换行分隔要点；actionItems 汇总所有跨章节的待办/行动项，去重、简洁。\n\n会议转写文本：\n${transcript}`;
 
   try {
     const res = await fetch(url, {
@@ -139,8 +141,14 @@ export async function generateMinutes(
       id: uid(),
       title: String(c.title ?? '未命名章节'),
       content: String(c.content ?? ''),
+      actionItems: Array.isArray(c.actionItems)
+        ? c.actionItems.map((x: any) => String(x)).filter(Boolean)
+        : undefined,
     }));
-    return { summary: String(parsed.summary ?? ''), chapters };
+    const actionItems: string[] = Array.isArray(parsed.actionItems)
+      ? parsed.actionItems.map((x: any) => String(x)).filter(Boolean)
+      : [];
+    return { summary: String(parsed.summary ?? ''), chapters, actionItems };
   } catch {
     return heuristicMinutes(transcript);
   }
@@ -188,5 +196,5 @@ function heuristicMinutes(transcript: string): ChapterResult {
     content: p,
   }));
   const summary = paras[0]?.slice(0, 100) ?? '';
-  return { summary, chapters };
+  return { summary, chapters, actionItems: [] };
 }

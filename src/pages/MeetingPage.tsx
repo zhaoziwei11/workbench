@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import type { Meeting, Chapter } from '../types';
-import { getMeetings, saveMeetings, getSettings, uid } from '../lib/store';
+import { getMeetings, saveMeetings, getSettings, upsertTask, uid } from '../lib/store';
 import { todayStr } from '../lib/date';
 import { AudioRecorder } from '../lib/audio';
 import { transcribeAudio, generateMinutes } from '../lib/transcribe';
@@ -10,6 +10,7 @@ interface Draft {
   transcript: string;
   summary: string;
   chapters: Chapter[];
+  actionItems?: string[]; // 会议级行动项 / 待办
   audioPath?: string;
   audioBlob?: Blob;
 }
@@ -24,6 +25,7 @@ export function MeetingPage() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const recorderRef = useRef<AudioRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -113,8 +115,8 @@ export function MeetingPage() {
       const text = await transcribeAudio(draft.audioBlob, getSettings());
       setDraft((d) => (d ? { ...d, transcript: text } : d));
       if (text) {
-        const { summary, chapters } = await generateMinutes(text, getSettings());
-        setDraft((d) => (d ? { ...d, summary, chapters } : d));
+        const { summary, chapters, actionItems } = await generateMinutes(text, getSettings());
+        setDraft((d) => (d ? { ...d, summary, chapters, actionItems } : d));
       }
     } catch (e: any) {
       setError(e?.message || '处理失败');
@@ -128,8 +130,8 @@ export function MeetingPage() {
     setBusy('正在生成纪要…');
     setError('');
     try {
-      const { summary, chapters } = await generateMinutes(draft.transcript, getSettings());
-      setDraft((d) => (d ? { ...d, summary, chapters } : d));
+      const { summary, chapters, actionItems } = await generateMinutes(draft.transcript, getSettings());
+      setDraft((d) => (d ? { ...d, summary, chapters, actionItems } : d));
     } catch (e: any) {
       setError(e?.message || '生成纪要失败');
     } finally {
@@ -147,12 +149,47 @@ export function MeetingPage() {
       transcript: draft.transcript,
       summary: draft.summary,
       chapters: draft.chapters,
+      actionItems: draft.actionItems,
       createdAt: Date.now(),
     };
     const next = [m, ...meetings];
     setMeetings(next);
     saveMeetings(next);
     setDraft(null);
+  }
+
+  // 一键：把纪要里的行动项 / 待办抽取为「任务」页的条目
+  async function extractTasks() {
+    const items = (draft?.actionItems ?? []).map((x) => x.trim()).filter(Boolean);
+    if (items.length === 0) {
+      setNotice('');
+      setError('纪要里没有识别到待办项。可手动在下方补充行动项，或重新生成纪要。');
+      return;
+    }
+    setError('');
+    setBusy('正在把待办加入任务…');
+    try {
+      const stamp = Date.now();
+      let count = 0;
+      for (const item of items) {
+        await upsertTask({
+          id: uid(),
+          title: item,
+          content: `来自会议《${draft?.title || '未命名'}》的待办（${todayStr()}）`,
+          priority: 'medium',
+          date: todayStr(),
+          steps: [],
+          createdAt: stamp,
+          updatedAt: stamp,
+        });
+        count++;
+      }
+      setNotice(`已把 ${count} 条待办加入「任务」页 ✅`);
+    } catch (e: any) {
+      setError(e?.message || '抽取失败');
+    } finally {
+      setBusy('');
+    }
   }
 
   function updateChapter(id: string, patch: Partial<Chapter>) {
@@ -168,6 +205,7 @@ export function MeetingPage() {
       transcript: m.transcript,
       summary: m.summary,
       chapters: m.chapters,
+      actionItems: m.actionItems,
       audioPath: m.audioPath,
     };
     try {
@@ -204,6 +242,7 @@ export function MeetingPage() {
       </div>
 
       {error && <p className="error">{error}</p>}
+      {notice && <p className="notice">{notice}</p>}
 
       <input
         ref={fileRef}
@@ -245,6 +284,14 @@ export function MeetingPage() {
             <button className="btn-primary" onClick={saveMeeting}>
               保存会议
             </button>
+            <button
+              className="btn-sm"
+              disabled={!draft.actionItems || draft.actionItems.length === 0 || !!busy}
+              onClick={extractTasks}
+              title="把纪要识别出的行动项一键加入「任务」页"
+            >
+              📋 抽取待办到任务
+            </button>
             {busy && <span className="muted">{busy}</span>}
           </div>
           {draft.audioPath && (
@@ -253,6 +300,54 @@ export function MeetingPage() {
               {draft.audioBlob ? '（可重新转写 / 生成纪要）' : '（桌面版将自动读取以重新转写）'}
             </p>
           )}
+
+          <div className="action-items">
+            <div className="ai-head">
+              <strong>行动项 / 待办</strong>
+              <span className="muted">（生成纪要后自动识别，可编辑，点「抽取待办到任务」加入任务页）</span>
+            </div>
+            {(draft.actionItems ?? []).length === 0 && (
+              <p className="muted">暂无行动项。生成纪要后将自动列出会议中的待办事项。</p>
+            )}
+            {(draft.actionItems ?? []).map((item, i) => (
+              <div className="ai-row" key={i}>
+                <span className="ai-idx">{i + 1}</span>
+                <textarea
+                  rows={1}
+                  value={item}
+                  onChange={(e) =>
+                    setDraft((d) => {
+                      if (!d) return d;
+                      const next = [...(d.actionItems ?? [])];
+                      next[i] = e.target.value;
+                      return { ...d, actionItems: next };
+                    })
+                  }
+                />
+                <button
+                  className="ai-del"
+                  title="删除该项"
+                  onClick={() =>
+                    setDraft((d) => {
+                      if (!d) return d;
+                      const next = (d.actionItems ?? []).filter((_, j) => j !== i);
+                      return { ...d, actionItems: next };
+                    })
+                  }
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            <button
+              className="btn-sm ai-add"
+              onClick={() =>
+                setDraft((d) => (d ? { ...d, actionItems: [...(d.actionItems ?? []), ''] } : d))
+              }
+            >
+              ＋ 手动添加行动项
+            </button>
+          </div>
 
           <div className="meeting-grid">
             <div>

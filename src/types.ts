@@ -66,6 +66,7 @@ export interface Chapter {
   title: string;
   content: string;     // 该章节文字 / 笔记
   start?: number;      // 起始秒（若可定位）
+  actionItems?: string[]; // 该章节明确的待办 / 行动项
 }
 
 export interface Meeting {
@@ -76,6 +77,7 @@ export interface Meeting {
   transcript: string;
   chapters: Chapter[];
   summary: string;
+  actionItems?: string[]; // 会议级行动项 / 待办（跨章节合并，便于一键抽取到任务页）
   createdAt: number;
 }
 

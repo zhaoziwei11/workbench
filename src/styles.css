@@ -163,6 +163,64 @@ body {
   padding: 8px 12px;
   border-radius: 8px;
 }
+.notice {
+  color: #1a7f37;
+  background: #e9f7ef;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+.action-items {
+  margin-top: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #fafbfc;
+}
+.ai-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ai-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ai-idx {
+  flex: 0 0 22px;
+  height: 22px;
+  line-height: 22px;
+  text-align: center;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 12px;
+}
+.ai-row textarea {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+  font-family: inherit;
+}
+.ai-del {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+.ai-del:hover {
+  color: var(--danger);
+}
+.ai-add {
+  margin-top: 4px;
+}
 
 .date-bar {
   display: flex;
