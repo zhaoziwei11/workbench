@@ -3,8 +3,9 @@ import type { TableFile, SheetData, CompareOutput, CompareMode } from '../types'
 import { getTables, saveTables } from '../lib/store';
 import { compareTables } from '../lib/tables';
 
-// 后端地址: 单进程方案下前端由后端同源托管, 用相对路径即可(端口随启动脚本变化也不用改)
-const COMPARE_API = '';
+// 云端数据源: GitHub Actions 每天 8:00 抓取后, CSV 推到 compare-cloud 仓库的 data 分支
+// raw.githubusercontent.com 默认带 CORS *, github.io 可直接跨域 fetch, 无需本机后端
+const CLOUD_BASE = 'https://raw.githubusercontent.com/zhaoziwei11/compare-cloud/data';
 
 // 运单时间字段选项(从 probe_output 拿到的真实下拉项, 顺序与页面对齐)
 const TIME_FIELDS = [
@@ -30,6 +31,36 @@ function defaultRange() {
 
 function uid() {
   return 'tb_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// ========== CSV 解析(云端 data 分支返回的是纯 CSV 文本) ==========
+function stripBom(s: string): string {
+  return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
+}
+
+// 简易 CSV 解析, 支持引号包裹的字段与字段内逗号/换行
+function parseCSV(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else if (c === '\r') { /* ignore */ }
+      else field += c;
+    }
+  }
+  if (field !== '' || row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
 }
 
 // 后端返回的 row => 二维数组(加表头)
@@ -62,17 +93,9 @@ export function TablesPage() {
   const [end, setEnd] = useState(rng.end);
   const [timeField, setTimeField] = useState('磅单审核通过时间'); // 默认: 磅单审核通过时间
   const [fetching, setFetching] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [progressMsg, setProgressMsg] = useState('');
-  const [taskRunning, setTaskRunning] = useState(false);
-  const pollRef = useRef<number | null>(null);
-  const autoFetchedRef = useRef(false);     // 是否已自动获取过
+  const autoFetchedRef = useRef(false);     // 是否已加载过云端数据
   const autoComparedRef = useRef(false);    // 是否已自动对比过
-  const autoLastSeenRef = useRef<string | null>(null); // 后端今日自动获取日期(用于轮询刷新)
-  const viewRef = useRef({ start, end, timeField });   // 当前视图(供轮询判断是否默认视图)
-  const autoPollRef = useRef<number | null>(null);     // 8点自动刷新轮询
-  viewRef.current = { start, end, timeField };
-  const defaultRangeRef = useRef(rng);                 // 工作日调整后的默认范围(周一=周五~周日), 供"默认视图"判断
 
   // 拉取结果统计
   const [fetchSummary, setFetchSummary] = useState<{
@@ -141,235 +164,85 @@ export function TablesPage() {
     });
   }
 
-  // ========== 自动获取: 启动爬取 ==========
-  async function startFetch() {
-    if (fetching || taskRunning) {
-      setMsg('已有任务在跑, 请先等它完成');
-      return;
-    }
-    if (!start || !end || start > end) {
-      setMsg('日期范围不合法 (开始 ≤ 结束)');
-      return;
-    }
+  // ========== 云端数据: 从 GitHub data 分支读取最新 CSV ==========
+  async function loadCloudData() {
+    if (fetching) return;
     setFetching(true);
     setMsg('');
-    setProgress(0);
-    setProgressMsg('正在启动后端爬取…');
+    setProgressMsg('正在从云端读取最新承运云数据…');
     setFetchSummary(null);
     try {
-      const res = await fetch(`${COMPARE_API}/api/fetch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ start, end, time_field: timeField }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setMsg(`启动失败: ${data.error || res.statusText}`);
-        setFetching(false);
-        return;
-      }
-      setProgressMsg(`已提交, 等待浏览器登录态 + 爬取…`);
-      beginPolling();
-    } catch (e: any) {
-      setMsg(`后端不可达 (是否启动了 compare_backend.py?): ${e.message}`);
-      setFetching(false);
-    }
-  }
-
-  // ========== 自动获取: 轮询进度 ==========
-  function beginPolling() {
-    if (pollRef.current) window.clearInterval(pollRef.current);
-    pollRef.current = window.setInterval(async () => {
-      try {
-        const res = await fetch(`${COMPARE_API}/api/status`);
-        const data = await res.json();
-        setTaskRunning(!!data.task_running);
-        setProgress(data.progress || 0);
-        setProgressMsg(data.message || data.stage || '');
-        if (data.done || (!data.task_running && data.stage !== 'init' && data.stage !== 'idle')) {
-          if (pollRef.current) {
-            window.clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
-          setFetching(false);
-          if (data.error) {
-            setMsg(`❌ 爬取失败: ${data.error}`);
-            return;
-          }
-          await loadFetchedData();
-        }
-      } catch (e) {
-        if (pollRef.current) {
-          window.clearInterval(pollRef.current);
-          pollRef.current = null;
-        }
-        setFetching(false);
-        setMsg(`后端连接断开: ${(e as Error).message}`);
-      }
-    }, 1500);
-  }
-
-  // ========== 自动获取: 拉取完数据塞入 tables(无参, 参数取自后端 meta) ==========
-  async function loadFetchedData() {
-    try {
-      const [wRes, bRes] = await Promise.all([
-        fetch(`${COMPARE_API}/api/data?source=waybill`).then((r) => r.json()),
-        fetch(`${COMPARE_API}/api/data?source=billing`).then((r) => r.json()),
+      const [wRes, bRes, mRes] = await Promise.all([
+        fetch(`${CLOUD_BASE}/waybill_compare.csv`).catch(() => null),
+        fetch(`${CLOUD_BASE}/billing_compare.csv`).catch(() => null),
+        fetch(`${CLOUD_BASE}/meta.json`).catch(() => null),
       ]);
-      if (!wRes.ok && !bRes.ok) {
-        setMsg('尚未获取到数据，可点「获取数据」手动拉取。');
-        return;
-      }
-      // 参数优先用后端返回的 meta(同一次 fetch 的 start/end/time_field), 兜底用默认
-      const s = wRes.start || bRes.start || defaultRange().start;
-      const e = wRes.end || bRes.end || defaultRange().end;
-      const tf = wRes.time_field || '磅单审核通过时间';
+      const wTxt = wRes && wRes.ok ? await wRes.text() : '';
+      const bTxt = bRes && bRes.ok ? await bRes.text() : '';
+      const metaTxt = mRes && mRes.ok ? await mRes.text() : '{}';
+      let meta: any = {};
+      try { meta = JSON.parse(metaTxt || '{}'); } catch { meta = {}; }
 
-      const waybillSheet = wRes.ok ? rowsToSheet(wRes.headers, wRes.rows) : null;
-      const billingSheet = bRes.ok ? rowsToSheet(bRes.headers, bRes.rows) : null;
+      if (meta.skipped) {
+        setMsg(`📴 云端最近一次（${meta.fetched_at || '—'}）因${meta.error ? '失败' : '非工作日'}未抓取；下个工作日 08:00 自动获取。`);
+      } else if (meta.ok === false && meta.error) {
+        setMsg(`⚠️ 云端抓取失败（${meta.fetched_at || '—'}）：${meta.error}。多半是 cookie 过期，需重新导出一次。`);
+      }
+
+      const wRows = wTxt ? parseCSV(stripBom(wTxt)) : [];
+      const bRows = bTxt ? parseCSV(stripBom(bTxt)) : [];
+      const s = meta.start || defaultRange().start;
+      const e = meta.end || defaultRange().end;
+      const tf = meta.time_field || '磅单审核通过时间';
+
+      const wSheet = wRows.length > 1 ? rowsToSheet(wRows[0], wRows.slice(1)) : null;
+      const bSheet = bRows.length > 1 ? rowsToSheet(bRows[0], bRows.slice(1)) : null;
 
       const newTables: TableFile[] = [];
-      if (waybillSheet && waybillSheet.rows.length > 1) {
-        newTables.push({
-          id: uid(),
-          name: `运单 (${tf} ${s}~${e})`,
-          sheets: [waybillSheet],
-          importedAt: Date.now(),
-        });
+      if (wSheet && wSheet.rows.length > 1) {
+        newTables.push({ id: uid(), name: `运单 (${tf} ${s}~${e})`, sheets: [wSheet], importedAt: Date.now() });
       }
-      if (billingSheet && billingSheet.rows.length > 1) {
-        newTables.push({
-          id: uid(),
-          name: `货主计费 (创建时间 ${s}~${e})`,
-          sheets: [billingSheet],
-          importedAt: Date.now(),
-        });
+      if (bSheet && bSheet.rows.length > 1) {
+        newTables.push({ id: uid(), name: `货主计费 (创建时间 ${s}~${e})`, sheets: [bSheet], importedAt: Date.now() });
       }
+      // 用函数式更新避免闭包里的 tables 过期, 不会覆盖你手动导入的表格
+      let nextTables: TableFile[] = [];
+      setTables((prev) => {
+        const filtered = prev.filter(
+          (t) => !t.name.startsWith('运单 (') && !t.name.startsWith('货主计费 (')
+        );
+        nextTables = [...filtered, ...newTables];
+        return nextTables;
+      });
+      saveTables(nextTables);
 
-      // 替换旧的两张自动表(同名则覆盖)
-      const filtered = tables.filter(
-        (t) => !t.name.startsWith('运单 (') && !t.name.startsWith('货主计费 (')
-      );
-      const next = [...filtered, ...newTables];
-      setTables(next);
-      saveTables(next);
-
-      const wCount = waybillSheet ? countDistinctByCol(waybillSheet, '运单编号') : null;
-      const bCount = billingSheet ? countDistinctByCol(billingSheet, '运单编号') : null;
-
+      const wCount = wSheet ? countDistinctByCol(wSheet, '运单编号') : null;
+      const bCount = bSheet ? countDistinctByCol(bSheet, '运单编号') : null;
       setFetchSummary({
-        waybill: wRes.ok ? { rows: wRes.row_count, headers: wRes.headers } : null,
-        billing: bRes.ok ? { rows: bRes.row_count, headers: bRes.headers } : null,
+        waybill: wSheet ? { rows: wSheet.rows.length - 1, headers: wRows[0] } : null,
+        billing: bSheet ? { rows: bSheet.rows.length - 1, headers: bRows[0] } : null,
         waybillCount: wCount,
         billingCount: bCount,
         timeField: tf,
         range: `${s} ~ ${e}`,
       });
-
-      setMsg(`✅ 已完成数据统计: 运单 ${wRes.row_count || 0} 行 / 计费 ${bRes.row_count || 0} 行`);
+      setMsg(
+        `✅ 已加载云端最新数据（抓取于 ${meta.fetched_at || '—'}）：运单 ${wSheet ? wSheet.rows.length - 1 : 0} 行 / 计费 ${bSheet ? bSheet.rows.length - 1 : 0} 行`
+      );
     } catch (err: any) {
-      setMsg(`读取爬取数据失败: ${err.message}`);
+      setMsg(`读取云端数据失败（仓库未就绪或网络问题）：${err?.message || err}`);
+    } finally {
+      setFetching(false);
     }
   }
 
-  // 卸载清轮询
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) window.clearInterval(pollRef.current);
-      if (autoPollRef.current) window.clearInterval(autoPollRef.current);
-    };
-  }, []);
-
+  // ========== 自动获取: 拉取完数据塞入 tables(无参, 参数取自后端 meta) ==========
   // ========== 每日 8 点自动刷新轮询(后端常驻调度, 到点拉完前端自动展示) ==========
-  function startAutoPoll() {
-    if (autoPollRef.current) return;
-    autoPollRef.current = window.setInterval(async () => {
-      try {
-        const res = await fetch(`${COMPARE_API}/api/status`);
-        const st = await res.json();
-        const today = localDate();
-        if (st.auto_last_date === today && st.auto_last_date !== autoLastSeenRef.current) {
-          autoLastSeenRef.current = st.auto_last_date;
-          // 仅当用户停留在默认视图(工作日范围 + 磅单审核)时才自动刷新, 不打断手动查看
-          const v = viewRef.current;
-          const def = defaultRangeRef.current;
-          const isDefaultView =
-            v.start === def.start && v.end === def.end && v.timeField === '磅单审核通过时间';
-          if (isDefaultView) {
-            setMsg('🌅 每日 8:00 自动获取已完成，已更新最新数据');
-            await loadFetchedData();
-          }
-        } else {
-          autoLastSeenRef.current = st.auto_last_date || autoLastSeenRef.current;
-        }
-      } catch {
-        /* 后端未起, 忽略 */
-      }
-    }, 60000);
-  }
-
-  // 挂载: 拉取调度信息(工作日判断) → 今日 8 点已自动获取则直接展示; 否则仅"当天首次"兜底拉一次
+  // 挂载: 打开页面即加载云端最新数据(无需后端, GitHub Actions 已每日 8 点更新)
   useEffect(() => {
     if (autoFetchedRef.current) return;
     autoFetchedRef.current = true;
-    const today = localDate();
-    const flagKey = `wb_autofetch_${today}`;
-    (async () => {
-      let st: any = {};
-      let sched: any = {};
-      try {
-        const sres = await fetch(`${COMPARE_API}/api/status`);
-        st = await sres.json();
-        autoLastSeenRef.current = st.auto_last_date || null;
-      } catch {
-        /* 后端未起, 走兜底拉取 */
-      }
-      // 调度信息: 工作日 / 节假日 / 下个工作日 / 今日自动范围(与后端同一份日历)
-      try {
-        const scres = await fetch(`${COMPARE_API}/api/schedule`);
-        sched = await scres.json();
-      } catch {
-        sched = {};
-      }
-      const isWorkday = sched.is_workday !== false; // 取不到默认按工作日处理
-      const range =
-        sched.auto_range && sched.auto_range.start && sched.auto_range.end
-          ? sched.auto_range
-          : defaultRange();
-      // 同步默认范围(输入框 + 默认视图判断), 使周一展示周五~周日等缺口范围
-      setStart(range.start);
-      setEnd(range.end);
-      defaultRangeRef.current = range;
-
-      if (!isWorkday) {
-        const label = sched.reason === 'weekend' ? '周末' : '法定节假日';
-        const nxt = sched.next_workday || '—';
-        setMsg(`📴 今日为${label}，自动获取已跳过；下个工作日 ${nxt} 08:00 自动获取。`);
-        startAutoPoll();
-        return;
-      }
-
-      if (st.auto_last_date === today) {
-        setMsg('📅 今日 8:00 自动获取已完成，正在展示最新数据…');
-        await loadFetchedData();
-        startAutoPoll();
-        return;
-      }
-      // 今日还没数据: 仅当今天尚未自动拉取过, 才兜底拉一次(防止每次刷新都弹 Edge 窗口)
-      let already = false;
-      try { already = localStorage.getItem(flagKey) === '1'; } catch {}
-      if (already) {
-        setMsg('ℹ️ 今日数据尚未获取，可点「获取数据」手动拉取。');
-        startAutoPoll();
-        return;
-      }
-      try { localStorage.setItem(flagKey, '1'); } catch {}
-      const t = window.setTimeout(() => {
-        startFetch();
-        startAutoPoll();
-      }, 800);
-      return () => window.clearTimeout(t);
-    })();
+    loadCloudData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -468,9 +341,9 @@ export function TablesPage() {
 
       {/* ========== 自动获取面板 ========== */}
       <div className="auto-fetch-panel">
-        <h3>🚀 自动获取承运云数据（工作日 8:00 自动 · 节假日跳过）</h3>
+        <h3>🚀 自动获取承运云数据（云端每日 8:00 自动 · 节假日跳过）</h3>
         <p className="muted small">
-          后端在每个<b>工作日</b>的 <b>8:00</b> 自动获取「运单列表 + 货主计费」并导入下方表格；<b>周末及法定节假日自动跳过</b>，跨假期的缺口会在节后首个工作日一次性补取（例如周五~周日的数据，下周一 8:00 自动获取）。当天首次打开页面且今日 8 点尚未获取时，自动兜底拉取一次（之后刷新只读缓存，不再弹浏览器，省资源）。
+          数据由 <b>GitHub Actions 云端</b>在每个<b>工作日</b>的 <b>8:00</b> 自动抓取「运单列表 + 货主计费」并推送到云端（<b>无需你开电脑、无需本机后端</b>）；周末及法定节假日自动跳过，跨假期缺口在节后首个工作日补取。打开本页即自动加载最新数据；点「▶ 获取数据」可手动刷新。需要自定义日期范围时，告诉我帮你触发一次。
         </p>
         <div className="cmp-row">
           <label>
@@ -489,20 +362,17 @@ export function TablesPage() {
               ))}
             </select>
           </label>
-          <button className="btn-primary" onClick={startFetch} disabled={fetching}>
+          <button className="btn-primary" onClick={loadCloudData} disabled={fetching}>
             {fetching ? '获取中…' : '▶ 获取数据'}
           </button>
         </div>
 
-        {(fetching || progress > 0) && (
+        {fetching && (
           <div className="progress-wrap">
             <div className="progress-bar">
-              <div className="progress-fill" style={{ width: `${progress}%` }} />
+              <div className="progress-fill" style={{ width: '60%' }} />
             </div>
-            <span className="progress-msg">
-              {progress}% · {progressMsg}
-              {taskRunning && <span className="dot-flash"> ●</span>}
-            </span>
+            <span className="progress-msg">{progressMsg}</span>
           </div>
         )}
 
