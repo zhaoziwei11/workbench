@@ -127,6 +127,11 @@ function uid() {
   return 'tb_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+// 判断是否为「承运云自动拉取」生成的表（避免与用户导入的表混淆）
+function isCloudTable(t: TableFile): boolean {
+  return t.name.startsWith('运单 (') || t.name.startsWith('货主计费 (');
+}
+
 function recordsToSheet(name: string, records: any[]): SheetData | null {
   if (!records || records.length === 0) return null;
   const headers: string[] = Object.keys(records[0]);
@@ -194,6 +199,15 @@ export function TablesPage() {
     getTables().then(setTables);
   }, []);
 
+  // ========== 数据源模式：承运云直连 / 导入文件对比 ==========
+  const [srcMode, setSrcMode] = useState<'cloud' | 'import'>(() => {
+    try {
+      return localStorage.getItem(TOKEN_KEY) ? 'cloud' : 'import';
+    } catch {
+      return 'import';
+    }
+  });
+
   // ========== Token 管理 ==========
   const [token, setToken] = useState<string>(() => {
     try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
@@ -222,8 +236,6 @@ export function TablesPage() {
   const [end, setEnd] = useState(rng.end);
   const [fetching, setFetching] = useState(false);
   const [progressMsg, setProgressMsg] = useState('');
-  const autoFetchedRef = useRef(false);
-
   const [fetchSummary, setFetchSummary] = useState<{
     waybill: { rows: number; headers: string[] } | null;
     billing: { rows: number; headers: string[] } | null;
@@ -232,7 +244,7 @@ export function TablesPage() {
     range: string;
   } | null>(null);
 
-  // ========== 字段筛选 ==========
+  // ========== 字段筛选（复用为「参与对比的字段」） ==========
   const [colFilter, setColFilter] = useState<Record<string, Set<string>>>({});
 
   // ========== 对比状态 ==========
@@ -251,6 +263,11 @@ export function TablesPage() {
   const [showOnlyBList, setShowOnlyBList] = useState(false);
   const [msg, setMsg] = useState('');
 
+  // 自动选表 / 自动跑对比的护卫（保证只自动做一遍，避免和手动操作打架）
+  const autoFetchedRef = useRef(false);
+  const autoSetupRef = useRef(false);
+  const autoRunRef = useRef(false);
+
   // ========== 项目投影(按字段筛选投影) ==========
   function projectSheet(t: TableFile | undefined, sheetIdx: number, allowed?: Set<string>): SheetData | null {
     if (!t) return null;
@@ -266,16 +283,34 @@ export function TablesPage() {
     return { name: sheet.name + '(已筛选)', rows: proj };
   }
 
-  async function onFiles(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files || []);
+  // ========== 导入文件（解析 + 入库，拖拽/点击通用） ==========
+  async function handleFiles(files: File[]) {
     if (!files.length) return;
     setMsg('正在解析…');
-    const parsed = await Promise.all(files.map(parseFile));
-    const next = [...tables, ...parsed];
-    setTables(next);
-    saveTables(next);
-    setMsg(`已导入 ${parsed.length} 个文件，当前共 ${next.length} 个表格。`);
+    try {
+      const parsed = await Promise.all(files.map(parseFile));
+      const next = [...tables, ...parsed];
+      setTables(next);
+      saveTables(next);
+      setMsg(`✅ 已导入 ${parsed.length} 个文件，当前共 ${next.length} 个表格。`);
+    } catch (e: any) {
+      setMsg(`❌ 解析失败：${e?.message || e}`);
+    }
+  }
+
+  function onFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []);
+    handleFiles(files);
     e.target.value = '';
+  }
+
+  // 拖拽上传
+  const [dragOver, setDragOver] = useState(false);
+  function onDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length) handleFiles(files);
   }
 
   function removeTable(id: string) {
@@ -292,7 +327,21 @@ export function TablesPage() {
     });
   }
 
-  // ========== 前端直连抓取 ==========
+  // ========== 切换数据源模式（重置自动选/自动跑，避免残留上一次 A/B） ==========
+  function switchMode(m: 'cloud' | 'import') {
+    if (m === srcMode) return;
+    setSrcMode(m);
+    autoSetupRef.current = false;
+    autoRunRef.current = false;
+    setAId('');
+    setBId('');
+    setKeyColOrMode('0');
+    setResult(null);
+    setCountResult(null);
+    setMsg('');
+  }
+
+  // ========== 前端直连抓取（承运云） ==========
   async function fetchDirect() {
     if (!token.trim()) {
       setMsg('⚠️ 请先在上方输入并保存承运云 Token。Token 在承运云页面 F12 → Network → 任意请求的 Request Headers 里 `Token:` 这一行。');
@@ -338,9 +387,7 @@ export function TablesPage() {
 
       let nextTables: TableFile[] = [];
       setTables((prev) => {
-        const filtered = prev.filter(
-          (t) => !t.name.startsWith('运单 (') && !t.name.startsWith('货主计费 (')
-        );
+        const filtered = prev.filter((t) => !isCloudTable(t));
         nextTables = [...filtered, ...newTables];
         return nextTables;
       });
@@ -365,7 +412,7 @@ export function TablesPage() {
     }
   }
 
-  // 挂载时若已存 Token 自动拉取一次
+  // 挂载时若已存 Token 自动拉取一次（仅触发一次）
   useEffect(() => {
     if (autoFetchedRef.current) return;
     autoFetchedRef.current = true;
@@ -373,29 +420,47 @@ export function TablesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 获取完成后自动选好两表 + 跑逐行对比
-  const autoComparedRef = useRef(false);
+  // ========== 自动选表：根据当前数据源模式挑两张表做 A/B ==========
   useEffect(() => {
-    if (!fetchSummary) return;
-    const w = tables.find((t) => t.name.startsWith('运单 ('));
-    const b = tables.find((t) => t.name.startsWith('货主计费 ('));
-    if (!w || !b) return;
-    if (aId !== w.id || bId !== b.id) {
-      setAId(w.id);
-      setBId(b.id);
-      const ha = w.sheets[0]?.rows[0] || [];
-      selectAllCols(w.id, ha);
-      const ki = ha.indexOf('childNo');
-      if (ki >= 0) setKeyColOrMode(String(ki));
-      return;
+    if (autoSetupRef.current) return;
+    let a: TableFile | undefined;
+    let b: TableFile | undefined;
+    if (srcMode === 'cloud') {
+      a = tables.find((t) => t.name.startsWith('运单 ('));
+      b = tables.find((t) => t.name.startsWith('货主计费 ('));
+    } else {
+      const userTables = tables.filter((t) => !isCloudTable(t));
+      if (userTables.length >= 2) {
+        a = userTables[userTables.length - 2];
+        b = userTables[userTables.length - 1];
+      }
     }
-    if (!autoComparedRef.current && !result && !countResult) {
-      autoComparedRef.current = true;
-      const t = window.setTimeout(() => runCompare(), 300);
-      return () => window.clearTimeout(t);
+    if (!a || !b) return;
+    autoSetupRef.current = true;
+    setAId(a.id);
+    setBId(b.id);
+    const ha = a.sheets[0]?.rows[0] || [];
+    // 优先用 childNo；否则用两表第一个共同列作关键列
+    let ki = ha.indexOf('childNo');
+    if (ki < 0) {
+      const hb = b.sheets[0]?.rows[0] || [];
+      const common = ha.find((h) => hb.includes(h));
+      if (common) ki = ha.indexOf(common);
     }
+    if (ki >= 0) setKeyColOrMode(String(ki));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchSummary, tables, aId, bId, keyColOrMode]);
+  }, [tables, srcMode]);
+
+  // ========== 自动跑一次对比（A/B + 关键列都就绪后） ==========
+  const runCompareRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (!aId || !bId) return;
+    if (autoRunRef.current) return;
+    autoRunRef.current = true;
+    const t = window.setTimeout(() => runCompareRef.current(), 350);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aId, bId, keyColOrMode]);
 
   // ========== 字段筛选 toggle ==========
   function toggleCol(tableId: string, col: string) {
@@ -495,6 +560,7 @@ export function TablesPage() {
     setCountResult(null);
     setMsg('');
   }
+  runCompareRef.current = runCompare; // 始终指向最新闭包，供自动跑使用
 
   // ========== 派生数据（用 useMemo 缓存，避免每次 render 重算导致下拉卡顿） ==========
   const ta = tables.find((t) => t.id === aId);
@@ -535,7 +601,21 @@ export function TablesPage() {
   return (
     <div className="page">
       <div className="page-head">
-        <h2>承运云数据对比（运单 vs 货主计费）</h2>
+        <h2>表格对比</h2>
+        <div className="src-tabs">
+          <button
+            className={srcMode === 'cloud' ? 'tab active' : 'tab'}
+            onClick={() => switchMode('cloud')}
+          >
+            承运云直连
+          </button>
+          <button
+            className={srcMode === 'import' ? 'tab active' : 'tab'}
+            onClick={() => switchMode('import')}
+          >
+            导入文件对比
+          </button>
+        </div>
         <label className="btn-primary">
           + 批量导入
           <input
@@ -550,104 +630,144 @@ export function TablesPage() {
 
       {msg && <p className="muted">{msg}</p>}
 
-      {/* ========== Token 设置面板 ========== */}
-      <div className="auto-fetch-panel">
-        <h3>🔑 承运云 Token（仅存本机浏览器，不上传任何人）</h3>
-        <p className="muted small">
-          首次使用需粘贴一次 Token：打开承运云网页按 <b>F12</b> → Network → 任意请求 →
-          Request Headers 里找 <b>Token:</b> 这一行，复制其值填下面。保存后刷新页面会自动按默认范围拉取数据。
-        </p>
-        <div className="cmp-row">
-          <label style={{ flex: 1 }}>
-            Token
+      {/* ========== 承运云直连模式 ========== */}
+      {srcMode === 'cloud' && (
+        <>
+          {/* Token 设置面板 */}
+          <div className="auto-fetch-panel">
+            <h3>🔑 承运云 Token（仅存本机浏览器，不上传任何人）</h3>
+            <p className="muted small">
+              首次使用需粘贴一次 Token：打开承运云网页按 <b>F12</b> → Network → 任意请求 →
+              Request Headers 里找 <b>Token:</b> 这一行，复制其值填下面。保存后刷新页面会自动按默认范围拉取数据。
+            </p>
+            <div className="cmp-row">
+              <label style={{ flex: 1 }}>
+                Token
+                <input
+                  type="text"
+                  value={tokenInput}
+                  placeholder="粘贴 Token 值（如 ab9d5655...）"
+                  onChange={(e) => setTokenInput(e.target.value)}
+                  style={{ width: '100%' }}
+                />
+              </label>
+              <button className="btn-primary" onClick={saveToken}>
+                {tokenSaved ? '更新/清除' : '保存 Token'}
+              </button>
+              {tokenSaved && <span className="wb-match">已保存 ✅</span>}
+            </div>
+          </div>
+
+          {/* 数据获取面板 */}
+          <div className="auto-fetch-panel">
+            <h3>🚀 获取数据（前端直连承运云 · 零后端零费用）</h3>
+            <p className="muted small">
+              浏览器直接用你的 Token 请求承运云网关（网关已开放跨域）。选好日期范围点「获取数据」，
+              即可拉取「运单列表 + 货主计费」并自动加载、自动对比。任意设备（公司/家用/手机）打开本页都能用。
+            </p>
+            <div className="cmp-row">
+              <label>
+                开始日期
+                <input type="date" value={start} onChange={(e) => setStart(e.target.value)} disabled={fetching} />
+              </label>
+              <label>
+                结束日期
+                <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} disabled={fetching} />
+              </label>
+              <button className="btn-primary" onClick={fetchDirect} disabled={fetching || !token.trim()}>
+                {fetching ? '获取中…' : '▶ 获取数据'}
+              </button>
+            </div>
+
+            {fetching && (
+              <div className="progress-wrap">
+                <div className="progress-bar">
+                  <div className="progress-fill" style={{ width: '60%' }} />
+                </div>
+                <span className="progress-msg">{progressMsg}</span>
+              </div>
+            )}
+
+            {fetchSummary && (
+              <div className="fetch-summary">
+                <strong>✅ 已完成数据统计</strong> (范围 {fetchSummary.range})
+                <div className="sum-row">
+                  <span className="sum-block">
+                    📦 运单: {fetchSummary.waybill?.rows || 0} 行 / {fetchSummary.waybill?.headers.length || 0} 列
+                  </span>
+                  <span className="sum-block">
+                    💰 货主计费: {fetchSummary.billing?.rows || 0} 行 / {fetchSummary.billing?.headers.length || 0} 列
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ========== 导入文件对比模式 ========== */}
+      {srcMode === 'import' && (
+        <div className="auto-fetch-panel">
+          <h3>📥 导入文件对比</h3>
+          <p className="muted small">
+            拖拽或选择任意 <b>CSV / Excel</b> 文件（可多选）。导入后会自动选最近两张表为「表格 A / B」，
+            自动选两表第一个共同列作关键列，并自动跑一次对比。你想要对比哪些字段，可在下方
+            <b>「字段筛选」</b>里勾选（勾选 = 参与对比）。
+          </p>
+
+          <div
+            className={dragOver ? 'drop-zone drag' : 'drop-zone'}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={onDrop}
+            onClick={() => {
+              const inp = document.getElementById('import-file-input') as HTMLInputElement | null;
+              inp?.click();
+            }}
+          >
+            <div className="drop-icon">⬆️</div>
+            <div>把 CSV / Excel 文件拖到这里，或 <b>点击选择</b></div>
+            <div className="muted small">支持 .csv .xlsx .xls，可一次选多个</div>
             <input
-              type="text"
-              value={tokenInput}
-              placeholder="粘贴 Token 值（如 ab9d5655...）"
-              onChange={(e) => setTokenInput(e.target.value)}
-              style={{ width: '100%' }}
+              id="import-file-input"
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              multiple
+              style={{ display: 'none' }}
+              onChange={onFiles}
             />
-          </label>
-          <button className="btn-primary" onClick={saveToken}>
-            {tokenSaved ? '更新/清除' : '保存 Token'}
-          </button>
-          {tokenSaved && <span className="wb-match">已保存 ✅</span>}
-        </div>
-      </div>
-
-      {/* ========== 数据获取面板 ========== */}
-      <div className="auto-fetch-panel">
-        <h3>🚀 获取数据（前端直连承运云 · 零后端零费用）</h3>
-        <p className="muted small">
-          浏览器直接用你的 Token 请求承运云网关（网关已开放跨域）。选好日期范围点「获取数据」，
-          即可拉取「运单列表 + 货主计费」并自动加载、自动对比。任意设备（公司/家用/手机）打开本页都能用。
-        </p>
-        <div className="cmp-row">
-          <label>
-            开始日期
-            <input type="date" value={start} onChange={(e) => setStart(e.target.value)} disabled={fetching} />
-          </label>
-          <label>
-            结束日期
-            <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} disabled={fetching} />
-          </label>
-          <button className="btn-primary" onClick={fetchDirect} disabled={fetching || !token.trim()}>
-            {fetching ? '获取中…' : '▶ 获取数据'}
-          </button>
-        </div>
-
-        {fetching && (
-          <div className="progress-wrap">
-            <div className="progress-bar">
-              <div className="progress-fill" style={{ width: '60%' }} />
-            </div>
-            <span className="progress-msg">{progressMsg}</span>
           </div>
-        )}
 
-        {fetchSummary && (
-          <div className="fetch-summary">
-            <strong>✅ 已完成数据统计</strong> (范围 {fetchSummary.range})
-            <div className="sum-row">
-              <span className="sum-block">
-                📦 运单: {fetchSummary.waybill?.rows || 0} 行 / {fetchSummary.waybill?.headers.length || 0} 列
-              </span>
-              <span className="sum-block">
-                💰 货主计费: {fetchSummary.billing?.rows || 0} 行 / {fetchSummary.billing?.headers.length || 0} 列
-              </span>
-            </div>
+          {/* 已加载表格列表（导入模式可见，可删除） */}
+          <h3 style={{ marginTop: 16 }}>已加载表格</h3>
+          <div className="table-list">
+            {tables.length === 0 && <p className="muted">还没有表格，拖拽或点击上方区域导入文件。</p>}
+            {tables.map((t) => {
+              const cols = t.sheets[0]?.rows[0] || [];
+              const sel = colFilter[t.id];
+              return (
+                <div className="table-chip" key={t.id}>
+                  <span>{t.name} {isCloudTable(t) && <span className="muted">(承运云)</span>}</span>
+                  <span className="muted">
+                    {t.sheets.length} 个 sheet · {cols.length} 列
+                    {sel && sel.size > 0 && sel.size < cols.length && ` · 已筛 ${sel.size}`}
+                  </span>
+                  <button className="icon-btn" onClick={() => removeTable(t.id)}>×</button>
+                </div>
+              );
+            })}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* ========== 已导入表格列表 ========== */}
-      <h3>已加载表格</h3>
-      <div className="table-list">
-        {tables.length === 0 && <p className="muted">还没有表格, 可点上方"批量导入"或"获取数据"。</p>}
-        {tables.map((t) => {
-          const cols = t.sheets[0]?.rows[0] || [];
-          const sel = colFilter[t.id];
-          return (
-            <div className="table-chip" key={t.id}>
-              <span>{t.name}</span>
-              <span className="muted">
-                {t.sheets.length} 个 sheet · {cols.length} 列
-                {sel && sel.size > 0 && sel.size < cols.length && ` · 已筛 ${sel.size}`}
-              </span>
-              <button className="icon-btn" onClick={() => removeTable(t.id)}>×</button>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* ========== 对比设置 ========== */}
+      {/* ========== 对比设置（两种模式通用） ========== */}
       {tables.length >= 2 && (
         <div className="compare-panel">
-          <h3>对比设置 {aId && bId && <span className="muted small">（已自动选好两表，childNo 为关键列）</span>}</h3>
+          <h3>对比设置 {aId && bId && <span className="muted small">（已自动选好两表，默认按关键列匹配）</span>}</h3>
           <div className="cmp-row">
             <label>
               表格 A
-              <select value={aId} onChange={(e) => { setAId(e.target.value); setResult(null); setCountResult(null); }}>
+              <select value={aId} onChange={(e) => { setAId(e.target.value); setResult(null); setCountResult(null); autoRunRef.current = false; }}>
                 <option value="">选择…</option>
                 {tables.map((t) => (
                   <option key={t.id} value={t.id}>{t.name}</option>
@@ -676,7 +796,7 @@ export function TablesPage() {
           {aId && (ta?.sheets[sheetA]?.rows[0]?.length ?? 0) > 0 && (
             <div className="col-filter">
               <div className="col-filter-head">
-                <strong>表格 A 字段筛选</strong>
+                <strong>表格 A · 参与对比的字段</strong>
                 <span className="muted small">（{allowedA?.size || 0} / {ta?.sheets[sheetA]?.rows[0]?.length || 0} 已选 · 不选 = 全选）</span>
                 <button className="btn-link" onClick={() => selectAllCols(aId, ta?.sheets[sheetA]?.rows[0] || [])}>全选</button>
               </div>
@@ -689,7 +809,7 @@ export function TablesPage() {
           <div className="cmp-row">
             <label>
               表格 B
-              <select value={bId} onChange={(e) => { setBId(e.target.value); setResult(null); setCountResult(null); }}>
+              <select value={bId} onChange={(e) => { setBId(e.target.value); setResult(null); setCountResult(null); autoRunRef.current = false; }}>
                 <option value="">选择…</option>
                 {tables.map((t) => (
                   <option key={t.id} value={t.id}>{t.name}</option>
@@ -717,7 +837,7 @@ export function TablesPage() {
           {bId && (tb?.sheets[sheetB]?.rows[0]?.length ?? 0) > 0 && (
             <div className="col-filter">
               <div className="col-filter-head">
-                <strong>表格 B 字段筛选</strong>
+                <strong>表格 B · 参与对比的字段</strong>
                 <span className="muted small">（{allowedB?.size || 0} / {tb?.sheets[sheetB]?.rows[0]?.length || 0} 已选 · 不选 = 全选）</span>
                 <button className="btn-link" onClick={() => selectAllCols(bId, tb?.sheets[sheetB]?.rows[0] || [])}>全选</button>
               </div>
