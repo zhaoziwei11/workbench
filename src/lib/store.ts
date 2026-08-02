@@ -12,6 +12,8 @@ import {
   rowToTableFile,
   rowToMeeting,
 } from './cloud';
+// 解析代码/文档后自动提取的待办种子任务（见 seedTasks.json）
+import seedTasks from '../seedTasks.json';
 
 const PREFIX = 'workbench:';
 
@@ -36,8 +38,19 @@ export const uid = (): string =>
   Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 // ---------------- 任务 ----------------
+const SEED_FLAG = 'tasksSeeded';
+// 首次运行（本地无任务且未注入过）时，自动写入解析代码/文档得到的待办种子任务。
+// 非破坏式：已有任务、或用户曾主动清空过任务（已置 flag），均不再注入，仅注入一次。
 export async function getTasks(): Promise<Task[]> {
-  return readLocal<Task[]>('tasks', []);
+  const existing = readLocal<Task[]>('tasks', []);
+  if (existing.length === 0 && !localStorage.getItem(PREFIX + SEED_FLAG)) {
+    const seeded = seedTasks as unknown as Task[];
+    writeLocal('tasks', seeded);
+    localStorage.setItem(PREFIX + SEED_FLAG, '1');
+    void pushTasks(seeded);
+    return seeded;
+  }
+  return existing;
 }
 export async function saveTasks(tasks: Task[]): Promise<void> {
   writeLocal('tasks', tasks);
@@ -83,6 +96,10 @@ const DEFAULT_SETTINGS: Settings = {
   apiKey: '',
   whisperModel: 'whisper-1',
   chatModel: 'gpt-4o-mini',
+  asrProvider: 'openai',
+  asrBaseUrl: 'https://api.openai.com/v1',
+  asrApiKey: '',
+  asrModel: 'whisper-1',
 };
 
 export function getSettings(): Settings {

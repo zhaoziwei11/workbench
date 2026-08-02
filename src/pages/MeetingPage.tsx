@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import type { Meeting, Chapter } from '../types';
 import { getMeetings, saveMeetings, getSettings, uid } from '../lib/store';
 import { todayStr } from '../lib/date';
@@ -26,6 +26,7 @@ export function MeetingPage() {
   const [error, setError] = useState('');
   const recorderRef = useRef<AudioRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     return () => {
@@ -73,6 +74,22 @@ export function MeetingPage() {
     setDraft((d) => (d ? { ...d, audioBlob: blob, audioPath } : d));
   }
 
+  // 上传音频文件：选文件即建立一份新的草稿（无需先录音）
+  async function handleUpload(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 允许重复选择同一文件
+    if (!file) return;
+    setError('');
+    setDraft({
+      title: file.name.replace(/\.[^.]+$/, ''),
+      transcript: '',
+      summary: '',
+      chapters: [],
+      audioBlob: file,
+      audioPath: file.name,
+    });
+  }
+
   async function doTranscribe() {
     if (!draft?.audioBlob) return;
     setBusy('正在转写…');
@@ -82,6 +99,25 @@ export function MeetingPage() {
       setDraft((d) => (d ? { ...d, transcript: text } : d));
     } catch (e: any) {
       setError(e?.message || '转写失败');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  // 一键：先转写，再生成结构化纪要
+  async function doAll() {
+    if (!draft?.audioBlob) return;
+    setBusy('正在转写并生成纪要…');
+    setError('');
+    try {
+      const text = await transcribeAudio(draft.audioBlob, getSettings());
+      setDraft((d) => (d ? { ...d, transcript: text } : d));
+      if (text) {
+        const { summary, chapters } = await generateMinutes(text, getSettings());
+        setDraft((d) => (d ? { ...d, summary, chapters } : d));
+      }
+    } catch (e: any) {
+      setError(e?.message || '处理失败');
     } finally {
       setBusy('');
     }
@@ -125,14 +161,25 @@ export function MeetingPage() {
     );
   }
 
-  function loadMeeting(m: Meeting) {
-    setDraft({
+  // 载入历史会议；桌面版会尝试读取已保存的录音文件，使其可「重新转写」
+  async function loadMeeting(m: Meeting) {
+    const next: Draft = {
       title: m.title,
       transcript: m.transcript,
       summary: m.summary,
       chapters: m.chapters,
       audioPath: m.audioPath,
-    });
+    };
+    try {
+      const api = (window as any).electronAPI;
+      if (m.audioPath && api?.readFile) {
+        const buf = await api.readFile(m.audioPath);
+        if (buf) next.audioBlob = new Blob([buf as ArrayBuffer], { type: 'audio/webm' });
+      }
+    } catch {
+      /* 浏览器或无文件时忽略 */
+    }
+    setDraft(next);
   }
 
   const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
@@ -151,9 +198,20 @@ export function MeetingPage() {
             ■ 停止录音（{mm}:{ss}）
           </button>
         )}
+        <button className="btn-sm" onClick={() => fileRef.current?.click()}>
+          📁 上传音频转写
+        </button>
       </div>
 
       {error && <p className="error">{error}</p>}
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept="audio/*"
+        style={{ display: 'none' }}
+        onChange={handleUpload}
+      />
 
       {draft && (
         <div className="meeting-draft">
@@ -176,11 +234,25 @@ export function MeetingPage() {
             >
               生成结构化纪要
             </button>
+            <button
+              className="btn-sm"
+              disabled={!draft.audioBlob || !!busy}
+              onClick={doAll}
+              title="先转写为文字，再生成结构化纪要"
+            >
+              ⚡ 转写并生成纪要
+            </button>
             <button className="btn-primary" onClick={saveMeeting}>
               保存会议
             </button>
             {busy && <span className="muted">{busy}</span>}
           </div>
+          {draft.audioPath && (
+            <p className="muted">
+              音频来源：{draft.audioPath}
+              {draft.audioBlob ? '（可重新转写 / 生成纪要）' : '（桌面版将自动读取以重新转写）'}
+            </p>
+          )}
 
           <div className="meeting-grid">
             <div>

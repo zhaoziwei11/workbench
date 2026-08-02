@@ -80,9 +80,16 @@ export interface Meeting {
 }
 
 export interface Settings {
-  provider: 'openai' | 'custom';
+  provider: 'openai' | 'deepseek' | 'qwen' | 'custom';
   baseUrl: string;     // 例如 https://api.openai.com/v1
   apiKey: string;
   whisperModel: string;
   chatModel: string;
+  // —— 语音转写（ASR）可独立配置，与纪要（Chat）解耦 ——
+  // 只有支持 OpenAI 兼容 /audio/transcriptions 的服务商才能做转写（如 OpenAI Whisper、
+  // 通义 Paraformer、本地 whisper.cpp 等）。DeepSeek / 通义千问(对话) 不提供 ASR，需单独填写。
+  asrProvider: 'openai' | 'qwen' | 'custom';
+  asrBaseUrl: string;  // 支持 /audio/transcriptions 的接口地址
+  asrApiKey: string;
+  asrModel: string;    // 如 whisper-1 / paraformer
 }

@@ -46,3 +46,9 @@ ipcMain.handle('save-file', async (_event, { defaultName, buffer }) => {
   fs.writeFileSync(filePath, Buffer.from(buffer));
   return { canceled: false, filePath };
 });
+
+// 读取已保存的录音文件（用于历史会议「重新转写」）
+ipcMain.handle('read-file', async (_event, filePath) => {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  return fs.readFileSync(filePath);
+});
