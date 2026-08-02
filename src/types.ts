@@ -96,4 +96,8 @@ export interface Settings {
   asrBaseUrl: string;  // 支持 /audio/transcriptions 的接口地址
   asrApiKey: string;
   asrModel: string;    // 如 whisper-1 / paraformer
+  // 转写引擎：'local' = 浏览器本地 Whisper（免费、离线、无需 Key，默认）；'cloud' = 云端 API（需 Key）
+  asrEngine: 'local' | 'cloud';
+  // 本地 Whisper 模型：Xenova/whisper-base（快、~140MB，中文够用）/ Xenova/whisper-small（更准、~460MB）
+  localModel: string;
 }

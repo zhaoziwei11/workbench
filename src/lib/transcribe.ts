@@ -1,5 +1,6 @@
 import type { Settings, Chapter } from '../types';
 import { uid } from './store';
+import { transcribeLocal } from './whisper';
 
 // 取出实际用于语音转写（ASR）的配置：优先使用独立的 asr* 字段，
 // 未单独配置时回退到主配置（向后兼容旧数据）。
@@ -30,8 +31,34 @@ function extFromMime(type: string): string {
 
 const MAX_SIZE = 25 * 1024 * 1024; // OpenAI Whisper 接口限制 25MB
 
+// 转写选项：用于上报进度（本地引擎会回调模型加载 / 转写进度）
+export interface TranscribeOpts {
+  onStatus?: (message: string, progress?: number) => void;
+}
+
+// 对外统一入口：按 asrEngine 路由到本地（免费）或云端（需 Key）
+export async function transcribeAudio(
+  blob: Blob,
+  settings: Settings,
+  opts?: TranscribeOpts
+): Promise<string> {
+  const engine = settings.asrEngine || 'local';
+  if (engine === 'cloud') return cloudTranscribe(blob, settings);
+  // 本地免费转写（无需任何 Key）
+  try {
+    return await transcribeLocal(
+      blob,
+      settings.localModel || 'Xenova/whisper-base',
+      (s) => opts?.onStatus?.(s.message, s.progress)
+    );
+  } catch (e: any) {
+    const msg = e?.message || String(e);
+    throw new Error(msg + '（若持续失败，可到「设置」把转写引擎切到「云端 API」）');
+  }
+}
+
 // 调用云端大模型 API 做语音转写（OpenAI 兼容 Whisper 接口 /audio/transcriptions）
-export async function transcribeAudio(blob: Blob, settings: Settings): Promise<string> {
+async function cloudTranscribe(blob: Blob, settings: Settings): Promise<string> {
   const cfg = asrConfig(settings);
   if (!cfg.apiKey) {
     throw new Error('未配置转写 API Key，请到「设置 → 语音转写(ASR)」填写。');
@@ -184,7 +211,7 @@ function parseJsonSafe(raw: string): any {
   return null;
 }
 
-// 无 API / 调用失败时的启发式兜底：按空行分段作为章节
+// 无 API / 调用失败时的启发式兜底：按段落分段作为章节，并用正则提取待办项
 function heuristicMinutes(transcript: string): ChapterResult {
   const paras = transcript
     .split(/\n{2,}/)
@@ -195,6 +222,27 @@ function heuristicMinutes(transcript: string): ChapterResult {
     title: `章节 ${i + 1}`,
     content: p,
   }));
-  const summary = paras[0]?.slice(0, 100) ?? '';
-  return { summary, chapters, actionItems: [] };
+  const summary = paras[0]?.slice(0, 120) ?? '';
+  return { summary, chapters, actionItems: extractActionItems(transcript) };
+}
+
+// 免费提取待办/行动项：按句切割，命中动作关键词且长度合理的句子视为待办，去重
+const ACTION_RE =
+  /(待办|需要|请|负责|跟进|安排|务必|记得|尽快|截止|ddl|todo|action|任务|落实|对接|提交|完成|处理|解决|确认|协调|推进|准备|通知|反馈|拟定|评审|跟进|落实)/i;
+function extractActionItems(text: string): string[] {
+  const sentences = text
+    .split(/[。！？!?\n]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 4 && ACTION_RE.test(s));
+  // 去重（保留首次出现顺序）
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of sentences) {
+    if (!seen.has(s)) {
+      seen.add(s);
+      out.push(s);
+    }
+    if (out.length >= 30) break;
+  }
+  return out;
 }

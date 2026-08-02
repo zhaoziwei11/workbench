@@ -100,6 +100,8 @@ const DEFAULT_SETTINGS: Settings = {
   asrBaseUrl: 'https://api.openai.com/v1',
   asrApiKey: '',
   asrModel: 'whisper-1',
+  asrEngine: 'local', // 默认本地免费转写，无需 Key
+  localModel: 'Xenova/whisper-base',
 };
 
 export function getSettings(): Settings {

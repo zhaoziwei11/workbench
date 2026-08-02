@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import type { Meeting, Chapter } from '../types';
-import { getMeetings, saveMeetings, getSettings, upsertTask, uid } from '../lib/store';
+import { getMeetings, saveMeetings, getSettings, saveSettings, upsertTask, uid } from '../lib/store';
 import { todayStr } from '../lib/date';
 import { AudioRecorder } from '../lib/audio';
 import { transcribeAudio, generateMinutes } from '../lib/transcribe';
@@ -46,6 +46,8 @@ export function MeetingPage() {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [asrEngine, setAsrEngine] = useState<'local' | 'cloud'>(getSettings().asrEngine || 'local');
+  const [whisperStatus, setWhisperStatus] = useState('');
   const recorderRef = useRef<AudioRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
   const elapsedRef = useRef(0);
@@ -170,27 +172,40 @@ export function MeetingPage() {
     });
   }
 
+  function switchEngine(e: 'local' | 'cloud') {
+    setAsrEngine(e);
+    const s = getSettings();
+    saveSettings({ ...s, asrEngine: e });
+  }
+
   async function doTranscribe() {
     if (!draft?.audioBlob) return;
-    setBusy('正在转写…');
+    setBusy(asrEngine === 'local' ? '正在本地转写…' : '正在转写…');
     setError('');
+    setWhisperStatus('');
     try {
-      const text = await transcribeAudio(draft.audioBlob, getSettings());
+      const text = await transcribeAudio(draft.audioBlob, getSettings(), {
+        onStatus: (msg) => setWhisperStatus(msg),
+      });
       setDraft((d) => (d ? { ...d, transcript: text } : d));
     } catch (e: any) {
       setError(e?.message || '转写失败');
     } finally {
       setBusy('');
+      setWhisperStatus('');
     }
   }
 
   // 一键：先转写，再生成结构化纪要
   async function doAll() {
     if (!draft?.audioBlob) return;
-    setBusy('正在转写并生成纪要…');
+    setBusy(asrEngine === 'local' ? '正在本地转写并生成纪要…' : '正在转写并生成纪要…');
     setError('');
+    setWhisperStatus('');
     try {
-      const text = await transcribeAudio(draft.audioBlob, getSettings());
+      const text = await transcribeAudio(draft.audioBlob, getSettings(), {
+        onStatus: (msg) => setWhisperStatus(msg),
+      });
       setDraft((d) => (d ? { ...d, transcript: text } : d));
       if (text) {
         const { summary, chapters, actionItems } = await generateMinutes(text, getSettings());
@@ -200,6 +215,7 @@ export function MeetingPage() {
       setError(e?.message || '处理失败');
     } finally {
       setBusy('');
+      setWhisperStatus('');
     }
   }
 
@@ -433,6 +449,33 @@ export function MeetingPage() {
               onChange={(e) => setDraft({ ...draft, title: e.target.value })}
             />
           </label>
+
+          <div className="asr-engine-row">
+            <span className="muted">转写引擎</span>
+            <div className="pri-group">
+              <button
+                className={'pri-btn' + (asrEngine === 'local' ? ' on' : '')}
+                onClick={() => switchEngine('local')}
+                title="浏览器本地 Whisper：免费、离线、无需 API Key（首次需下载模型）"
+              >
+                🆓 本地免费
+              </button>
+              <button
+                className={'pri-btn' + (asrEngine === 'cloud' ? ' on' : '')}
+                onClick={() => switchEngine('cloud')}
+                title="云端 API：需到「设置」填写转写 Key"
+              >
+                ☁️ 云端 API
+              </button>
+            </div>
+            {asrEngine === 'local' && (
+              <span className="muted whisper-note">本地模式无需 Key，首次转写会下载模型（约 140MB，之后缓存）</span>
+            )}
+            {asrEngine === 'cloud' && !getSettings().asrApiKey && (
+              <span className="muted whisper-note">云端模式需在「设置 → 语音转写(ASR)」填写 API Key</span>
+            )}
+          </div>
+          {whisperStatus && <p className="notice">{whisperStatus}</p>}
 
           <div className="rec-actions">
             <button className="btn-sm" disabled={!draft.audioBlob || !!busy} onClick={doTranscribe}>

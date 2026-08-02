@@ -106,55 +106,106 @@ export function SettingsPage() {
           <input value={s.chatModel} onChange={(e) => setS({ ...s, chatModel: e.target.value })} />
         </label>
 
-        {/* —— 语音转写（ASR）服务商（独立） —— */}
-        <h3 className="settings-section">二、语音转写（ASR）服务商</h3>
-        <p className="muted">
-          语音转写需要服务商提供 OpenAI 兼容的 <code>/audio/transcriptions</code> 接口。
-          DeepSeek、通义千问（对话）不提供语音识别，请用 OpenAI Whisper 或通义 Paraformer 等。
-          留空则自动回退使用上方「纪要服务商」的 Key 与地址。
-        </p>
+        {/* —— 转写引擎：本地免费 / 云端付费 —— */}
+        <h3 className="settings-section">二、语音转写引擎</h3>
         <div className="field">
-          <span>转写服务商预设</span>
+          <span>转写方式</span>
           <div className="pri-group">
-            {Object.entries(ASR_PRESETS).map(([k, p]) => (
-              <button
-                key={k}
-                className={'pri-btn' + (s.asrProvider === k ? ' on' : '')}
-                onClick={() => applyAsrPreset(k)}
-              >
-                {p.label}
-              </button>
-            ))}
+            <button
+              className={'pri-btn' + (s.asrEngine === 'local' ? ' on' : '')}
+              onClick={() => setS({ ...s, asrEngine: 'local' })}
+              title="浏览器本地 Whisper：免费、离线、无需 API Key（首次需下载模型）"
+            >
+              🆓 本地免费（推荐）
+            </button>
+            <button
+              className={'pri-btn' + (s.asrEngine === 'cloud' ? ' on' : '')}
+              onClick={() => setS({ ...s, asrEngine: 'cloud' })}
+              title="云端 API：需填写下方转写 Key"
+            >
+              ☁️ 云端 API
+            </button>
           </div>
         </div>
 
-        <label className="field">
-          <span>转写 API Base URL</span>
-          <input
-            value={s.asrBaseUrl}
-            onChange={(e) => setS({ ...s, asrBaseUrl: e.target.value })}
-            placeholder="https://api.openai.com/v1"
-          />
-        </label>
+        {s.asrEngine === 'local' ? (
+          <>
+            <div className="field">
+              <span>本地模型</span>
+              <div className="pri-group">
+                <button
+                  className={'pri-btn' + (s.localModel === 'Xenova/whisper-base' ? ' on' : '')}
+                  onClick={() => setS({ ...s, localModel: 'Xenova/whisper-base' })}
+                  title="快、约 140MB，中文够用（首次需下载，之后浏览器缓存）"
+                >
+                  whisper-base（快）
+                </button>
+                <button
+                  className={'pri-btn' + (s.localModel === 'Xenova/whisper-small' ? ' on' : '')}
+                  onClick={() => setS({ ...s, localModel: 'Xenova/whisper-small' })}
+                  title="更准、约 460MB（首次需下载，之后浏览器缓存）"
+                >
+                  whisper-small（更准）
+                </button>
+              </div>
+            </div>
+            <p className="muted">
+              本地模式完全免费、离线运行，<strong>无需任何 API Key</strong>。首次转写会从 CDN 下载模型
+              （base 约 140MB / small 约 460MB，仅一次，之后浏览器自动缓存）。
+              CPU 上转写几分钟音频约需数十秒至几分钟，中文准确度足够会议使用。
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="muted">
+              云端模式需要服务商提供 OpenAI 兼容的 <code>/audio/transcriptions</code> 接口。
+              DeepSeek、通义千问（对话）不提供语音识别，请用 OpenAI Whisper 或通义 Paraformer。
+              留空则自动回退使用上方「纪要服务商」的 Key 与地址。
+            </p>
+            <div className="field">
+              <span>转写服务商预设</span>
+              <div className="pri-group">
+                {Object.entries(ASR_PRESETS).map(([k, p]) => (
+                  <button
+                    key={k}
+                    className={'pri-btn' + (s.asrProvider === k ? ' on' : '')}
+                    onClick={() => applyAsrPreset(k)}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-        <label className="field">
-          <span>转写 API Key</span>
-          <input
-            type="password"
-            value={s.asrApiKey}
-            onChange={(e) => setS({ ...s, asrApiKey: e.target.value })}
-            placeholder="sk-...（可与纪要 Key 不同）"
-          />
-        </label>
+            <label className="field">
+              <span>转写 API Base URL</span>
+              <input
+                value={s.asrBaseUrl}
+                onChange={(e) => setS({ ...s, asrBaseUrl: e.target.value })}
+                placeholder="https://api.openai.com/v1"
+              />
+            </label>
 
-        <label className="field">
-          <span>转写模型</span>
-          <input
-            value={s.asrModel}
-            onChange={(e) => setS({ ...s, asrModel: e.target.value })}
-            placeholder="whisper-1 / paraformer"
-          />
-        </label>
+            <label className="field">
+              <span>转写 API Key</span>
+              <input
+                type="password"
+                value={s.asrApiKey}
+                onChange={(e) => setS({ ...s, asrApiKey: e.target.value })}
+                placeholder="sk-...（可与纪要 Key 不同）"
+              />
+            </label>
+
+            <label className="field">
+              <span>转写模型</span>
+              <input
+                value={s.asrModel}
+                onChange={(e) => setS({ ...s, asrModel: e.target.value })}
+                placeholder="whisper-1 / paraformer"
+              />
+            </label>
+          </>
+        )}
 
         <p className="muted">
           说明：API Key 仅保存在本机（localStorage），不会上传到任何第三方。麦克风录音在浏览器 /
