@@ -1,16 +1,45 @@
 // 浏览器本地 Whisper 转写（免费、离线、无需 API Key）
-// 通过 CDN 动态加载 transformers.js，避免打包体积膨胀；模型首次使用从 HuggingFace CDN 下载并缓存。
+// 所有运行资源（transformers.js / onnxruntime wasm / 模型）均自托管在站点同源的
+// /whisper/ 目录下，不依赖任何外部 CDN（jsdelivr / huggingface 等在受限网络常被墙）。
+// 只要能打开本页面（github.io），转写即可离线运行。
 
 export interface WhisperStatus {
   phase: 'model' | 'transcribe';
   message: string;
-  progress?: number; // 0-100
+  progress?: number;
 }
 
-// 动态从 CDN 加载 transformers.js（vite 会将其视为外部依赖，不打包进产物）
+// 计算站点根 URL（基于当前页面地址，兼容 /workbench/ 子路径与 file:// 本地）
+function siteBase(): string {
+  let base: string = './';
+  try {
+    // @ts-ignore - vite 注入
+    base = import.meta.env.BASE_URL || './';
+  } catch {
+    base = './';
+  }
+  try {
+    return new URL(base, location.href).href;
+  } catch {
+    return base;
+  }
+}
+
+// 动态从站点同源加载自托管的 transformers.js（webpack bundle，已内联 onnxruntime-web）
 async function getTransformers(): Promise<any> {
-  // @ts-ignore - 运行时从 CDN 加载，非编译期依赖
-  return import(/* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.1');
+  const root = siteBase();
+  const url = root + 'whisper/lib/transformers.js';
+  const mod = await import(/* @vite-ignore */ url);
+  const tf = mod.default ?? mod;
+  // 把模型与 wasm 运行时指向同源自托管目录，彻底不走公网 hub
+  if (tf.env) {
+    tf.env.allowLocalModels = true;
+    tf.env.localModelPath = root + 'whisper/models/';
+    tf.env.backends.onnx.wasm.wasmPaths = root + 'whisper/ort/';
+    tf.env.backends.onnx.wasm.numThreads = 1; // 单线程，避免 Worker 跨域/加载问题，稳定优先
+    tf.env.useBrowserCache = false;
+  }
+  return tf;
 }
 
 let pipelineCache: any = null;
@@ -55,14 +84,18 @@ export async function transcribeLocal(
 ): Promise<string> {
   if (!blob || blob.size === 0) throw new Error('音频为空，请重新录制或选择文件。');
 
+  const root = siteBase();
+  // model 形如 'Xenova/whisper-base'，映射到自托管目录 whisper/models/Xenova/whisper-base
+  const modelPath = root + 'whisper/models/' + model;
+
   const tf = await getTransformers();
-  if (!pipelineCache || modelCacheKey !== model) {
+  if (!pipelineCache || modelCacheKey !== modelPath) {
     onStatus?.({
       phase: 'model',
-      message: '正在加载本地语音识别模型…（首次约 140MB，请稍候，之后会缓存）',
+      message: '正在加载本地语音识别模型…（首次从本站点下载，约 120MB，之后浏览器缓存）',
       progress: 0,
     });
-    pipelineCache = await tf.pipeline('automatic-speech-recognition', model, {
+    pipelineCache = await tf.pipeline('automatic-speech-recognition', modelPath, {
       progress_callback: (p: any) => {
         if (!p) return;
         if (p.status === 'progress' && typeof p.progress === 'number') {
@@ -76,7 +109,7 @@ export async function transcribeLocal(
         }
       },
     });
-    modelCacheKey = model;
+    modelCacheKey = modelPath;
   } else {
     onStatus?.({ phase: 'model', message: '模型已就绪（已缓存）', progress: 100 });
   }

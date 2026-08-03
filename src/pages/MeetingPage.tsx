@@ -469,7 +469,7 @@ export function MeetingPage() {
               </button>
             </div>
             {asrEngine === 'local' && (
-              <span className="muted whisper-note">本地模式无需 Key，首次转写会下载模型（约 140MB，之后缓存）</span>
+              <span className="muted whisper-note">本地模式无需 Key，首次转写会从本站下载模型（约 120MB，之后缓存）；即使公司网络屏蔽公网 CDN 也能离线使用</span>
             )}
             {asrEngine === 'cloud' && !getSettings().asrApiKey && (
               <span className="muted whisper-note">云端模式需在「设置 → 语音转写(ASR)」填写 API Key</span>

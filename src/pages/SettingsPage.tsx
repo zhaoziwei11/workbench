@@ -136,22 +136,16 @@ export function SettingsPage() {
                 <button
                   className={'pri-btn' + (s.localModel === 'Xenova/whisper-base' ? ' on' : '')}
                   onClick={() => setS({ ...s, localModel: 'Xenova/whisper-base' })}
-                  title="快、约 140MB，中文够用（首次需下载，之后浏览器缓存）"
+                  title="已内置托管在本站，离线可用，中文够用"
                 >
-                  whisper-base（快）
-                </button>
-                <button
-                  className={'pri-btn' + (s.localModel === 'Xenova/whisper-small' ? ' on' : '')}
-                  onClick={() => setS({ ...s, localModel: 'Xenova/whisper-small' })}
-                  title="更准、约 460MB（首次需下载，之后浏览器缓存）"
-                >
-                  whisper-small（更准）
+                  whisper-base（内置·离线）
                 </button>
               </div>
             </div>
             <p className="muted">
-              本地模式完全免费、离线运行，<strong>无需任何 API Key</strong>。首次转写会从 CDN 下载模型
-              （base 约 140MB / small 约 460MB，仅一次，之后浏览器自动缓存）。
+              本地模式完全免费、离线运行，<strong>无需任何 API Key</strong>。模型与运行库已托管在
+              <strong>本站点同源</strong>目录下（约 120MB），首次转写从本站下载，之后浏览器自动缓存。
+              即使公司网络屏蔽了 jsdelivr / huggingface 等公网 CDN，只要能打开本页面就能转写。
               CPU 上转写几分钟音频约需数十秒至几分钟，中文准确度足够会议使用。
             </p>
           </>
