@@ -11,9 +11,8 @@
 --
 -- 设计说明：
 --   - 每个表都有 user_id，并开启 RLS，确保 A 用户绝对读不到 B 用户的数据。
---   - steps / sheets / chapters 用 jsonb 存（和前端结构一致），整行 upsert 同步最简单。
+--   - steps / sheets 用 jsonb 存（和前端结构一致），整行 upsert 同步最简单。
 --   - 时间戳用 bigint 毫秒（与前端 Date.now() 一致），便于多端「最后写入获胜」冲突处理。
---   - 转写 API 配置(Settings) 含密钥，刻意【不】进云端，各端本地保存，避免密钥上云。
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -27,6 +26,7 @@ create table if not exists public.tasks (
   priority    text        not null default 'medium'
                           check (priority in ('high', 'medium', 'low')),
   date        date        not null default current_date,
+  recurrence  jsonb       not null default '{"type":"none"}'::jsonb,
   steps       jsonb       not null default '[]'::jsonb,
   created_at  bigint      not null default extract(epoch from now()) * 1000,
   updated_at  bigint      not null default extract(epoch from now()) * 1000
@@ -49,29 +49,10 @@ create table if not exists public.table_files (
 create index if not exists table_files_user_idx on public.table_files (user_id, imported_at desc);
 
 -- ---------------------------------------------------------------------------
--- 3. 会议与纪要（音频文件本身不上云，仅同步文本；audio_path 仅桌面端本地有效）
--- ---------------------------------------------------------------------------
-create table if not exists public.meetings (
-  id          text        primary key default gen_random_uuid()::text,
-  user_id     uuid        not null references auth.users (id) on delete cascade,
-  title       text        not null default '',
-  date        date        not null default current_date,
-  audio_path  text,
-  transcript  text        not null default '',
-  chapters    jsonb       not null default '[]'::jsonb,
-  summary     text        not null default '',
-  created_at  bigint      not null default extract(epoch from now()) * 1000,
-  updated_at  bigint      not null default extract(epoch from now()) * 1000
-);
-
-create index if not exists meetings_user_idx on public.meetings (user_id, created_at desc);
-
--- ---------------------------------------------------------------------------
--- 4. 行级安全（RLS）：每张表只允许本人读写自己的行
+-- 3. 行级安全（RLS）：每张表只允许本人读写自己的行
 -- ---------------------------------------------------------------------------
 alter table public.tasks       enable row level security;
 alter table public.table_files enable row level security;
-alter table public.meetings    enable row level security;
 
 -- tasks
 drop policy if exists "tasks_owner" on public.tasks;
@@ -87,15 +68,7 @@ create policy "table_files_owner" on public.table_files
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
--- meetings
-drop policy if exists "meetings_owner" on public.meetings;
-create policy "meetings_owner" on public.meetings
-  for all
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-
 -- 可选：开启实时订阅（让多端改动秒级互相同步，而非仅靠刷新）。
 -- 在 Supabase 控制台 Database → Replication → 把这三张表加入 publication，或运行：
 -- alter publication supabase_realtime add table public.tasks;
 -- alter publication supabase_realtime add table public.table_files;
--- alter publication supabase_realtime add table public.meetings;
